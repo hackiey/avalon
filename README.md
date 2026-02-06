@@ -176,7 +176,6 @@ avalon/
 │   │       └── gameStore.ts        # Zustand Store
 │   └── package.json
 ├── run_batch.py                    # 批量对局 CLI 工具
-├── rollout_results/                # 批量对局结果
 ├── .env.example                    # 环境变量示例
 ├── requirements.txt                # Python 依赖
 └── README.md
