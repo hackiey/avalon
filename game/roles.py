@@ -83,9 +83,22 @@ def get_role_name_cn(role: Role) -> str:
     return ROLE_INFO[role].name_cn
 
 
+# All evil role name strings (including extended roles for forward compatibility)
+EVIL_ROLE_NAMES = {"assassin", "minion", "morgana", "mordred", "oberon"}
+
+
 def is_evil(role: Role) -> bool:
     """Check if a role is on the evil team."""
     return ROLE_INFO[role].team == Team.EVIL
+
+
+def is_evil_role(role_str: str) -> bool:
+    """Check if a role string represents an evil team member.
+
+    Works with raw string role names (e.g. from training data JSONL),
+    including extended roles not yet in the Role enum.
+    """
+    return role_str.lower() in EVIL_ROLE_NAMES
 
 
 def can_see_evil(role: Role) -> bool:

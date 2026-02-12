@@ -92,44 +92,44 @@ Visit http://localhost:5173 to get started.
 
 ## Batch Games & Training Data Export
 
-Use the `run_batch.py` CLI tool to run games in bulk and export training data:
+Use the `training/run_batch.py` CLI tool to run games in bulk and export training data:
 
 ```bash
 # Run 100 games (single model)
-python run_batch.py run -n 100 -m "qwen-plus:qwen"
+python -m training.run_batch run -n 100 -m "qwen-plus:qwen"
 
 # Run 100 games (multiple models, rotating)
-python run_batch.py run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
+python -m training.run_batch run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
 
 # Parallel execution (4 games at once)
-python run_batch.py run -n 100 -m "gpt-4o:openai" --parallel 4
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --parallel 4
 
 # With experiment tag
-python run_batch.py run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
 
 # List all batches
-python run_batch.py list
+python -m training.run_batch list
 
 # Export training trajectories
-python run_batch.py export --batch-id <BATCH_ID> --output ./data/training.jsonl
+python -m training.run_batch export --batch-id <BATCH_ID> --output ./data/training.jsonl
 
 # Export by tag
-python run_batch.py export --tag "exp_v1" --output ./data/exp_v1.jsonl
+python -m training.run_batch export --tag "exp_v1" --output ./data/exp_v1.jsonl
 ```
 
 ## Project Structure
 
 ```
 avalon/
+├── game/                           # Game engine (standalone)
+│   ├── roles.py                    # Role definitions & team logic
+│   ├── rules.py                    # Rule configuration (5-10 players)
+│   ├── state.py                    # Game state management
+│   ├── engine.py                   # Core game logic
+│   └── manager.py                  # Game manager (orchestrates engine + LLM + DB)
 ├── server/                         # Python backend
 │   ├── main.py                     # FastAPI + Socket.IO entry point
 │   ├── config.py                   # Configuration
-│   ├── game/                       # Game engine
-│   │   ├── engine.py               # Core game logic
-│   │   ├── manager.py              # Game manager
-│   │   ├── roles.py                # Role definitions
-│   │   ├── rules.py                # Rule configuration
-│   │   └── state.py                # Game state
 │   ├── llm/                        # LLM integration
 │   │   ├── base.py                 # Abstract base classes
 │   │   ├── providers.py            # Multi-provider support
@@ -151,29 +151,24 @@ avalon/
 │   │   └── schemas.py              # Pydantic schemas
 │   └── storage/                    # Data storage
 │       └── repository.py           # Repository
+├── training/                       # RL training (Verl + Episode-level GAE)
+│   ├── run_batch.py                # Batch game CLI tool
+│   ├── data/                       # Data preprocessing
+│   ├── reward/                     # Reward functions
+│   ├── critic/                     # Critic model (value head train/infer)
+│   ├── advantage/                  # Episode-level GAE computation
+│   ├── verl_extensions/            # Custom Verl advantage estimator
+│   ├── configs/                    # Training configs
+│   ├── scripts/                    # Training scripts (8-step self-play)
+│   └── eval/                       # Model evaluation
 ├── web/                            # React frontend
 │   ├── src/
 │   │   ├── App.tsx                 # App entry (routing)
 │   │   ├── components/             # UI components
-│   │   │   ├── Discussion.tsx      # Discussion panel
-│   │   │   ├── GameBoard.tsx       # Game board
-│   │   │   ├── HumanControls.tsx   # Human player controls
-│   │   │   ├── LLMDetailModal.tsx  # LLM detail modal
-│   │   │   ├── PlayerCard.tsx      # Player card
-│   │   │   ├── QuestTracker.tsx    # Quest tracker
-│   │   │   ├── VoteHistory.tsx     # Vote history
-│   │   │   └── ui/                 # Base UI component library
 │   │   ├── pages/                  # Pages
-│   │   │   ├── Home.tsx            # Home
-│   │   │   ├── Game.tsx            # Live game
-│   │   │   ├── Replay.tsx          # Game replay
-│   │   │   └── Stats.tsx           # Statistics
 │   │   ├── hooks/                  # Custom hooks
-│   │   │   └── useSocket.ts        # Socket.IO hook
 │   │   └── stores/                 # State management
-│   │       └── gameStore.ts        # Zustand store
 │   └── package.json
-├── run_batch.py                    # Batch game CLI tool
 ├── .env.example                    # Environment variables example
 ├── requirements.txt                # Python dependencies
 └── README.md

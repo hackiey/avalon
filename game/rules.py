@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import List, Dict
-from server.game.roles import Role
+from game.roles import Role
 
 
 @dataclass

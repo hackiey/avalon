@@ -94,44 +94,44 @@ pnpm dev
 
 ## 批量对局 & 训练数据导出
 
-使用 `run_batch.py` CLI 工具可以批量运行游戏并导出训练数据:
+使用 `training/run_batch.py` CLI 工具可以批量运行游戏并导出训练数据:
 
 ```bash
 # 运行 100 局游戏 (单模型)
-python run_batch.py run -n 100 -m "qwen-plus:qwen"
+python -m training.run_batch run -n 100 -m "qwen-plus:qwen"
 
 # 运行 100 局游戏 (多模型轮换)
-python run_batch.py run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
+python -m training.run_batch run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
 
 # 并行运行 (4 局同时进行)
-python run_batch.py run -n 100 -m "gpt-4o:openai" --parallel 4
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --parallel 4
 
 # 带实验标签
-python run_batch.py run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
 
 # 查看所有批次
-python run_batch.py list
+python -m training.run_batch list
 
 # 导出训练轨迹
-python run_batch.py export --batch-id <BATCH_ID> --output ./data/training.jsonl
+python -m training.run_batch export --batch-id <BATCH_ID> --output ./data/training.jsonl
 
 # 按标签导出
-python run_batch.py export --tag "exp_v1" --output ./data/exp_v1.jsonl
+python -m training.run_batch export --tag "exp_v1" --output ./data/exp_v1.jsonl
 ```
 
 ## 项目结构
 
 ```
 avalon/
+├── game/                           # 游戏引擎 (独立模块)
+│   ├── roles.py                    # 角色定义与阵营逻辑
+│   ├── rules.py                    # 规则配置 (5-10 人局)
+│   ├── state.py                    # 游戏状态管理
+│   ├── engine.py                   # 游戏核心逻辑
+│   └── manager.py                  # 游戏管理器 (协调引擎 + LLM + DB)
 ├── server/                         # Python 后端
 │   ├── main.py                     # FastAPI + Socket.IO 入口
 │   ├── config.py                   # 环境配置
-│   ├── game/                       # 游戏引擎
-│   │   ├── engine.py               # 游戏核心逻辑
-│   │   ├── manager.py              # 游戏管理器
-│   │   ├── roles.py                # 角色定义
-│   │   ├── rules.py                # 规则配置
-│   │   └── state.py                # 游戏状态
 │   ├── llm/                        # LLM 集成
 │   │   ├── base.py                 # 抽象基类
 │   │   ├── providers.py            # 多厂商实现
@@ -153,29 +153,24 @@ avalon/
 │   │   └── schemas.py              # Pydantic 数据模式
 │   └── storage/                    # 数据存储
 │       └── repository.py           # 数据仓库
+├── training/                       # RL 训练 (Verl + Episode-level GAE)
+│   ├── run_batch.py                # 批量对局 CLI 工具
+│   ├── data/                       # 数据预处理
+│   ├── reward/                     # 奖励函数
+│   ├── critic/                     # Critic 模型 (value head 训练/推理)
+│   ├── advantage/                  # Episode 级 GAE 计算
+│   ├── verl_extensions/            # 自定义 Verl advantage estimator
+│   ├── configs/                    # 训练配置
+│   ├── scripts/                    # 训练脚本 (8 步自博弈)
+│   └── eval/                       # 模型评估
 ├── web/                            # React 前端
 │   ├── src/
 │   │   ├── App.tsx                 # 应用入口 (路由配置)
 │   │   ├── components/             # UI 组件
-│   │   │   ├── Discussion.tsx      # 讨论区
-│   │   │   ├── GameBoard.tsx       # 游戏面板
-│   │   │   ├── HumanControls.tsx   # 人类玩家控制
-│   │   │   ├── LLMDetailModal.tsx  # LLM 详情弹窗
-│   │   │   ├── PlayerCard.tsx      # 玩家卡片
-│   │   │   ├── QuestTracker.tsx    # 任务追踪
-│   │   │   ├── VoteHistory.tsx     # 投票历史
-│   │   │   └── ui/                 # 基础 UI 组件库
 │   │   ├── pages/                  # 页面
-│   │   │   ├── Home.tsx            # 首页
-│   │   │   ├── Game.tsx            # 实时游戏
-│   │   │   ├── Replay.tsx          # 历史回放
-│   │   │   └── Stats.tsx           # 统计分析
 │   │   ├── hooks/                  # 自定义 Hooks
-│   │   │   └── useSocket.ts        # Socket.IO Hook
 │   │   └── stores/                 # 状态管理
-│   │       └── gameStore.ts        # Zustand Store
 │   └── package.json
-├── run_batch.py                    # 批量对局 CLI 工具
 ├── .env.example                    # 环境变量示例
 ├── requirements.txt                # Python 依赖
 └── README.md

@@ -5,9 +5,9 @@ from datetime import datetime
 from typing import Dict, Optional, Any
 import socketio
 
-from server.game.engine import GameEngine
-from server.game.state import GameState, GamePhase, GameStatus, Player
-from server.game.roles import Role, is_evil
+from game.engine import GameEngine
+from game.state import GameState, GamePhase, GameStatus, Player
+from game.roles import Role, is_evil
 from server.llm.player import LLMPlayerManager, LLMPlayer
 from server.storage.repository import GameRepository
 from server.models.schemas import GameCreate

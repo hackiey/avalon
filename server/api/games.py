@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 
 from server.models.schemas import GameCreate, GameResponse, GameSummary
-from server.game.manager import GameManager
+from game.manager import GameManager
 from server.storage.repository import GameRepository
 
 router = APIRouter()

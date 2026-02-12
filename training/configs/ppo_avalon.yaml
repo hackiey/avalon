@@ -1,0 +1,78 @@
+# ===========================================================================
+# Avalon PPO Training Configuration (Episode-level GAE + External Critic)
+# ===========================================================================
+# 使用外部 Critic + GAE 计算预计算的 advantage，
+# Verl 内部不再需要 critic 模型，通过自定义 estimator 直接使用。
+#
+# 使用方法:
+#   python -m verl.trainer.main_ppo \
+#       --config training/configs/ppo_avalon.yaml
+#
+# 或通过 self_play.sh 启动: bash training/scripts/self_play.sh
+#
+# 注意: 启动前需要先 import 注册自定义 estimator:
+#   import training.verl_extensions.precomputed_adv
+# ===========================================================================
+
+# --- 数据配置 ---
+data:
+  train_files: data/processed/train.parquet
+  val_files: data/processed/test.parquet
+  train_batch_size: 128
+  max_prompt_length: 2048        # Avalon 游戏上下文较长
+  max_response_length: 512
+  need_tools_kwargs: true         # 启用 tool-calling 支持 (Avalon function calling)
+
+# --- 算法配置 ---
+algorithm:
+  adv_estimator: precomputed     # 使用预计算的 advantage (外部 GAE)
+  kl_ctrl:
+    kl_coef: 0.001
+
+# --- Actor + Rollout + Reference 配置 ---
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen2.5-7B-Instruct
+  actor:
+    optim:
+      lr: 1e-6
+    ppo_mini_batch_size: 32
+    ppo_micro_batch_size_per_gpu: 2
+    clip_ratio: 0.2
+  rollout:
+    name: vllm
+    temperature: 0.7
+    top_p: 0.9
+    log_prob_micro_batch_size_per_gpu: 4
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.5
+  ref:
+    log_prob_micro_batch_size_per_gpu: 2
+
+# --- Critic 配置 ---
+# 不再需要 Verl 内置 critic，外部独立训练
+# critic:
+#   model:
+#     path: Qwen/Qwen2.5-7B-Instruct
+#   optim:
+#     lr: 1e-5
+#   ppo_micro_batch_size_per_gpu: 2
+
+# --- 自定义奖励函数 ---
+custom_reward_function:
+  path: training/reward/avalon_reward.py
+  name: compute_score
+
+# --- Trainer 配置 ---
+trainer:
+  project_name: avalon-rl
+  experiment_name: ppo-avalon-gae
+  logger:
+    - console
+    - wandb
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: 20
+  test_freq: 10
+  total_epochs: 100
+  val_before_train: false

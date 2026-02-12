@@ -1,9 +1,9 @@
 """Core game engine logic."""
 
 from typing import List, Optional, Dict, Any
-from server.game.state import GameState, GamePhase, GameStatus, Player, QuestResult, VoteResult, DiscussionMessage
-from server.game.rules import get_rules, requires_two_fails
-from server.game.roles import Team, Role
+from game.state import GameState, GamePhase, GameStatus, Player, QuestResult, VoteResult, DiscussionMessage
+from game.rules import get_rules, requires_two_fails
+from game.roles import Team, Role
 
 
 class GameEngine:
@@ -232,7 +232,7 @@ class GameEngine:
     
     def add_assassination_discussion(self, seat: int, content: str):
         """Add a discussion message from an evil player during assassination discussion."""
-        from server.game.state import DiscussionMessage
+        from game.state import DiscussionMessage
         player = self.state.get_player(seat)
         if player:
             message = DiscussionMessage(
@@ -248,7 +248,7 @@ class GameEngine:
     
     def get_evil_seats(self) -> List[int]:
         """Get all evil player seats."""
-        from server.game.roles import is_evil
+        from game.roles import is_evil
         return [p.seat for p in self.state.players if p.role and is_evil(p.role)]
     
     def next_assassination_discussion_speaker(self) -> Optional[int]:

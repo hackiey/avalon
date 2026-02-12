@@ -11,8 +11,8 @@ from server.models.schemas import (
     QuestResult, VoteResult, DiscussionMessage,
     ModelStats, RoleStats, ModelRoleStats, GameStatus, GamePhase
 )
-from server.game.state import GameState, Player
-from server.game.state import GameStatus as StateGameStatus, GamePhase as StateGamePhase
+from game.state import GameState, Player
+from game.state import GameStatus as StateGameStatus, GamePhase as StateGamePhase
 
 
 class GameRepository:
@@ -659,8 +659,8 @@ class GameRepository:
         Returns:
             A GameState object that can be used to create a GameEngine, or None if not found.
         """
-        from server.game.roles import Role, Team
-        from server.game.state import (
+        from game.roles import Role, Team
+        from game.state import (
             GameState, Player, GamePhase as StateGamePhase, 
             GameStatus as StateGameStatus, QuestResult as StateQuestResult,
             VoteResult as StateVoteResult, DiscussionMessage as StateDiscussionMessage

@@ -2,6 +2,7 @@
 
 import json
 import re
+import traceback
 from typing import List, Dict, Any, Optional, Union
 
 import httpx
@@ -99,6 +100,7 @@ class OpenAIProvider(LLMProvider):
             
         except Exception as e:
             print(f"Error in generate: {e}")
+            print(f"Error details: {traceback.format_exc()}")
             if tools:
                 return {}
             return ""

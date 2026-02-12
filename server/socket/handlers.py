@@ -29,7 +29,7 @@ def register_handlers(sio: socketio.AsyncServer):
             print(f"Client {sid} joined game {game_id}")
             
             # Try to send current game state if available
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             engine = manager.get_game(game_id)
             
@@ -53,7 +53,7 @@ def register_handlers(sio: socketio.AsyncServer):
         """Start a game."""
         game_id = data.get("game_id")
         if game_id:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             
             # Check if game exists in memory
@@ -84,7 +84,7 @@ def register_handlers(sio: socketio.AsyncServer):
         game_id = data.get("game_id")
         content = data.get("content")
         if game_id and content:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_discussion(game_id, content, sio)
     
@@ -94,7 +94,7 @@ def register_handlers(sio: socketio.AsyncServer):
         game_id = data.get("game_id")
         approve = data.get("approve")
         if game_id is not None and approve is not None:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_vote(game_id, approve, sio)
     
@@ -104,7 +104,7 @@ def register_handlers(sio: socketio.AsyncServer):
         game_id = data.get("game_id")
         success = data.get("success")
         if game_id is not None and success is not None:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_quest(game_id, success, sio)
     
@@ -115,7 +115,7 @@ def register_handlers(sio: socketio.AsyncServer):
         team = data.get("team")
         speech = data.get("speech", "")  # Optional summary speech
         if game_id and team:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_team_select(game_id, team, speech, sio)
     
@@ -125,7 +125,7 @@ def register_handlers(sio: socketio.AsyncServer):
         game_id = data.get("game_id")
         content = data.get("content")
         if game_id and content:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_assassination_discussion(game_id, content, sio)
     
@@ -135,6 +135,6 @@ def register_handlers(sio: socketio.AsyncServer):
         game_id = data.get("game_id")
         target = data.get("target")
         if game_id is not None and target is not None:
-            from server.game.manager import GameManager
+            from game.manager import GameManager
             manager = GameManager.get_instance()
             await manager.handle_human_assassinate(game_id, target, sio)

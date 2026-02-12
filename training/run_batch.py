@@ -2,18 +2,18 @@
 """
 Command-line interface for batch game running and data export.
 
-Usage:
+Usage (run from project root):
     # Run 100 games
-    python run_batch.py run --num-games 100 --models "qwen-plus:qwen"
+    python -m training.run_batch run --num-games 100 --models "qwen-plus:qwen"
     
     # Run with multiple models (rotating among players)
-    python run_batch.py run --num-games 100 --models "qwen-plus:qwen,gpt-4o:openai"
+    python -m training.run_batch run --num-games 100 --models "qwen-plus:qwen,gpt-4o:openai"
     
     # Export trajectories from a batch
-    python run_batch.py export --batch-id abc123 --output ./data/training.jsonl
+    python -m training.run_batch export --batch-id abc123 --output ./data/training.jsonl
     
     # List all batches
-    python run_batch.py list
+    python -m training.run_batch list
 """
 
 import argparse
@@ -54,13 +54,31 @@ async def cmd_run(args):
         rotate_models=not args.no_rotate,
         parallel=args.parallel,
         batch_tag=args.tag,
+        no_mongo=args.no_mongo,
     )
     
     runner = BatchGameRunner(config)
     result = await runner.run()
     
     print(f"\nBatch ID: {result.batch_id}")
-    print(f"To export: python run_batch.py export --batch-id {result.batch_id} --output ./data/{result.batch_id}.jsonl")
+
+    # In no-mongo mode, export directly from memory if --output is specified
+    if args.no_mongo and args.output:
+        from server.batch.exporter import TrainingDataExporter
+        exporter = TrainingDataExporter.__new__(TrainingDataExporter)
+        # No need for GameRepository since we export from memory
+        exporter.repo = None
+        await exporter.export_from_memory(
+            runner._memory_repo,
+            output_path=args.output,
+            batch_id=result.batch_id,
+            tag=args.tag,
+        )
+    elif args.no_mongo and not args.output:
+        print("WARNING: --no-mongo mode without --output. Game data is in memory only and will be lost.")
+        print("Next time use: --no-mongo --output ./data/trajectories.jsonl")
+    else:
+        print(f"To export: python -m training.run_batch export --batch-id {result.batch_id} --output ./data/{result.batch_id}.jsonl")
 
 
 async def cmd_export(args):
@@ -118,6 +136,10 @@ def main():
                            help="Number of games to run in parallel (default: 1)")
     run_parser.add_argument("--tag", type=str,
                            help="Experiment tag for this batch run (e.g., 'exp_v1')")
+    run_parser.add_argument("--no-mongo", action="store_true",
+                           help="Skip MongoDB, store data in memory (for servers without MongoDB)")
+    run_parser.add_argument("-o", "--output", type=str,
+                           help="Output JSONL path (auto-export when used with --no-mongo)")
     
     # Export command
     export_parser = subparsers.add_parser("export", help="Export training trajectories")

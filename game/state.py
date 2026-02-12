@@ -7,8 +7,8 @@ from datetime import datetime
 import uuid
 import random
 
-from server.game.roles import Role, Team, get_team, is_evil, can_see_evil, knows_teammates
-from server.game.rules import get_rules, GameRules
+from game.roles import Role, Team, get_team, is_evil, can_see_evil, knows_teammates
+from game.rules import get_rules, GameRules
 
 
 class GamePhase(str, Enum):

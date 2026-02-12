@@ -6,9 +6,9 @@ import asyncio
 
 from server.llm.base import LLMProvider, Message
 from server.llm.providers import create_provider
-from server.llm.prompts import build_system_prompt, build_user_prompt
+from game.prompts import build_system_prompt, build_user_prompt
 from server.llm.tools import game_tools
-from server.game.state import GameState, Player
+from game.state import GameState, Player
 
 
 @dataclass
@@ -136,6 +136,8 @@ class LLMPlayer:
         
         try:
             result = await self.provider.generate(messages, temperature=0.8, tools=tools)
+
+            print(f"[DEBUG] Discuss as leader result: {result}")
             
             # Build llm_output from raw result
             llm_output = self._build_llm_output(result)
@@ -344,7 +346,7 @@ class LLMPlayer:
         except Exception as e:
             print(f"Error in execute_quest: {e}")
             # Good players always succeed
-            from server.game.roles import is_evil
+            from game.roles import is_evil
             return LLMCallResult(
                 result=not is_evil(self.player.role),
                 llm_input=llm_input,

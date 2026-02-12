@@ -1,9 +1,21 @@
-"""Prompt templates for LLM players in Avalon."""
+"""Prompt templates for Avalon game.
+
+所有 prompt 构建逻辑的唯一来源，供 server（Web 对战）和 training（RL 训练）共用。
+
+两种使用模式：
+- use_tools=True (默认): 生成 tool call 格式指令，用于 server 端 LLM 通过 function calling 交互
+- use_tools=False: 生成纯文本格式指令，用于 RL 训练中模型直接输出自由文本
+"""
 
 from typing import List, Optional
-from server.game.state import GameState, Player, DiscussionMessage
-from server.game.roles import Role, Team, get_role_name_cn, get_team, is_evil
-from server.game.rules import get_rules
+from game.state import GameState, Player, DiscussionMessage
+from game.roles import Role, Team, get_role_name_cn, get_team, is_evil
+from game.rules import get_rules
+
+
+# ============================================================================
+# 核心 Prompt 构建函数（server 和 training 共用）
+# ============================================================================
 
 
 def build_system_prompt(player: Player, visible_evil: List[int], all_players: List[Player]) -> str:
@@ -93,6 +105,7 @@ def build_user_prompt(
     visible_evil: List[int],
     phase: str,
     current_memory: str = "",
+    use_tools: bool = True,
 ) -> str:
     """Build the user prompt with dynamic game state.
     
@@ -101,6 +114,15 @@ def build_user_prompt(
     - Current round discussions (will be summarized into memory next round)
     - Historical quest results and votes
     - Current phase-specific instructions
+
+    Args:
+        state: Current game state
+        player: The player this prompt is for
+        visible_evil: Evil player seats visible to this player
+        phase: Current game phase
+        current_memory: Player's accumulated memory (for server mode)
+        use_tools: If True, generate tool call instructions (server mode);
+                   if False, generate plain text format instructions (training mode)
     """
     prompt = ""
     
@@ -121,9 +143,16 @@ def build_user_prompt(
     prompt += _build_current_situation(state, player, visible_evil)
     
     # Section 5: Phase-specific instructions
-    prompt += _build_phase_instructions(state, player, visible_evil, phase)
+    prompt += _build_phase_instructions(state, player, visible_evil, phase, use_tools)
     
     return prompt
+
+
+
+
+# ============================================================================
+# 内部辅助函数
+# ============================================================================
 
 
 def _build_history_section(state: GameState) -> str:
@@ -236,30 +265,37 @@ def _build_phase_instructions(
     player: Player,
     visible_evil: List[int],
     phase: str,
+    use_tools: bool = True,
 ) -> str:
-    """Build phase-specific instructions."""
+    """Build phase-specific instructions.
+    
+    Args:
+        use_tools: If True, include tool call instructions; if False, use plain text format.
+    """
     
     if phase == "team_selection":
-        return _get_team_selection_instructions(state, player, visible_evil)
+        return _get_team_selection_instructions(state, player, visible_evil, use_tools)
     elif phase == "team_selection_final":
-        return _get_team_selection_final_instructions(state, player, visible_evil)
+        return _get_team_selection_final_instructions(state, player, visible_evil, use_tools)
     elif phase == "leader_discussion":
-        return _get_leader_discussion_instructions(state, player, visible_evil)
+        return _get_leader_discussion_instructions(state, player, visible_evil, use_tools)
     elif phase == "discussion":
-        return _get_discussion_instructions(state, player, visible_evil)
+        return _get_discussion_instructions(state, player, visible_evil, use_tools)
     elif phase == "team_vote":
-        return _get_vote_instructions(state, player, visible_evil)
+        return _get_vote_instructions(state, player, visible_evil, use_tools)
     elif phase == "quest_execution":
-        return _get_quest_instructions(state, player, visible_evil)
+        return _get_quest_instructions(state, player, visible_evil, use_tools)
     elif phase == "assassination_discussion":
-        return _get_assassination_discussion_instructions(state, player, visible_evil)
+        return _get_assassination_discussion_instructions(state, player, visible_evil, use_tools)
     elif phase == "assassination":
-        return _get_assassination_instructions(state, player, visible_evil)
+        return _get_assassination_instructions(state, player, visible_evil, use_tools)
     else:
         return ""
 
 
-def _get_leader_discussion_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_leader_discussion_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for leader's discussion phase (proposing a team)."""
     team_size = state.rules.quest_team_sizes[state.current_round - 1]
     
@@ -281,16 +317,23 @@ def _get_leader_discussion_instructions(state: GameState, player: Player, visibl
                 marker = "（坏人）"
         prompt += f"- 玩家{p.seat + 1}: {p.name} {marker}\n"
     
-    prompt += """
+    if use_tools:
+        prompt += """
 请调用 `speak` 工具发言，说明你初步考虑的队伍配置和理由。
 请调用 `update_memory` 工具记录你对局势的分析、各玩家身份推断和策略计划。
 
+注意：现在只是讨论阶段的发言，最终队伍选择会在讨论结束后进行。"""
+    else:
+        prompt += """
+请直接发表你的看法，说明你初步考虑的队伍配置和理由。
 注意：现在只是讨论阶段的发言，最终队伍选择会在讨论结束后进行。"""
     
     return prompt
 
 
-def _get_team_selection_final_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_team_selection_final_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for final team selection after discussion."""
     team_size = state.rules.quest_team_sizes[state.current_round - 1]
     
@@ -310,7 +353,8 @@ def _get_team_selection_final_instructions(state: GameState, player: Player, vis
                 marker = "（坏人）"
         prompt += f"- 玩家{p.seat + 1}: {p.name} {marker}\n"
     
-    prompt += """
+    if use_tools:
+        prompt += """
 根据刚才的讨论，决定最终队伍配置。你可以：
 - 坚持你之前提议的队伍
 - 根据讨论情况调整队伍人选
@@ -318,11 +362,17 @@ def _get_team_selection_final_instructions(state: GameState, player: Player, vis
 请调用 `propose_team` 工具选择最终队员。
 请调用 `speak` 工具做总结发言，说明你的最终决定和理由。
 请调用 `update_memory` 工具记录你的决策理由。"""
+    else:
+        prompt += f"""
+根据刚才的讨论，决定最终队伍配置。
+请以【队伍：玩家X, 玩家Y, ...】格式选择 {team_size} 名队员，然后说明理由。"""
     
     return prompt
 
 
-def _get_team_selection_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_team_selection_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for team selection phase (legacy, for compatibility)."""
     team_size = state.rules.quest_team_sizes[state.current_round - 1]
     
@@ -342,15 +392,21 @@ def _get_team_selection_instructions(state: GameState, player: Player, visible_e
                 marker = "（坏人）"
         prompt += f"- 玩家{p.seat + 1}: {p.name} {marker}\n"
     
-    prompt += """
+    if use_tools:
+        prompt += """
 请调用 `propose_team` 工具选择队员。
 请调用 `speak` 工具向大家解释你选择这个队伍的理由。
 请调用 `update_memory` 工具记录你对局势的分析、各玩家身份推断和策略计划。"""
+    else:
+        prompt += f"""
+请以【队伍：玩家X, 玩家Y, ...】格式选择 {team_size} 名队员，然后说明理由。"""
     
     return prompt
 
 
-def _get_discussion_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_discussion_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for discussion phase."""
     prompt = """## 行动：发表看法
 请对队长提议的队伍配置发表你的看法，支持或反对，并说明理由。
@@ -363,24 +419,36 @@ def _get_discussion_instructions(state: GameState, player: Player, visible_evil:
     elif is_evil(player.role):
         prompt += "💡 提示：考虑如何误导好人，隐藏自己的身份。\n\n"
     
-    prompt += """请调用 `speak` 工具发表你的看法。
+    if use_tools:
+        prompt += """请调用 `speak` 工具发表你的看法。
 请调用 `update_memory` 工具记录你对局势的分析、各玩家身份推断和策略计划。"""
+    else:
+        prompt += """请直接发表你的看法。"""
     
     return prompt
 
 
-def _get_vote_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_vote_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for voting phase."""
-    prompt = """## 行动：投票
+    if use_tools:
+        prompt = """## 行动：投票
 请决定是否同意当前提议的队伍执行任务。
 
 请调用 `vote_team` 工具进行投票（approve: true/false）。
 请调用 `update_memory` 工具记录投票原因、对局势的分析和策略计划。"""
+    else:
+        prompt = """## 行动：投票
+请决定是否同意当前提议的队伍执行任务。
+以【赞成】或【反对】开头，然后说明理由。"""
     
     return prompt
 
 
-def _get_quest_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_quest_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for quest execution phase."""
     prompt = "## 行动：执行任务\n"
     
@@ -400,13 +468,18 @@ def _get_quest_instructions(state: GameState, player: Player, visible_evil: List
 
 """
     
-    prompt += """请调用 `vote_quest` 工具决定任务结果（success: true/false）。
+    if use_tools:
+        prompt += """请调用 `vote_quest` 工具决定任务结果（success: true/false）。
 请调用 `update_memory` 工具记录任务决策理由和后续策略。"""
+    else:
+        prompt += """以【成功】或【失败】开头。"""
     
     return prompt
 
 
-def _get_assassination_discussion_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_assassination_discussion_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for evil team discussion before assassination."""
     prompt = """## 行动：刺杀前讨论
 好人完成了3个任务，但坏人阵营还有最后的机会！
@@ -421,16 +494,23 @@ def _get_assassination_discussion_instructions(state: GameState, player: Player,
         for msg in state.assassination_discussion_history:
             prompt += f"- 玩家{msg.seat + 1}({msg.player_name}): {msg.content}\n"
     
-    prompt += """
+    if use_tools:
+        prompt += """
 请调用 `speak` 工具发表你对谁是梅林的分析和判断。
 请调用 `update_memory` 工具记录你的推理过程。
 
+注意：这是坏人阵营的私密讨论，好人玩家看不到这些内容。请坦诚分享你的判断！"""
+    else:
+        prompt += """
+请直接发表你对谁是梅林的分析和判断。
 注意：这是坏人阵营的私密讨论，好人玩家看不到这些内容。请坦诚分享你的判断！"""
     
     return prompt
 
 
-def _get_assassination_instructions(state: GameState, player: Player, visible_evil: List[int]) -> str:
+def _get_assassination_instructions(
+    state: GameState, player: Player, visible_evil: List[int], use_tools: bool = True,
+) -> str:
     """Instructions for assassination phase."""
     prompt = """## 行动：刺杀梅林
 好人完成了3个任务！但作为刺客，你有最后一次机会。
@@ -445,14 +525,22 @@ def _get_assassination_instructions(state: GameState, player: Player, visible_ev
             prompt += f"- 玩家{msg.seat + 1}({msg.player_name}): {msg.content}\n"
         prompt += "\n"
     
-    prompt += """
+    if use_tools:
+        prompt += """
 请调用 `assassinate` 工具选择刺杀目标（target: 玩家编号）。
 请调用 `update_memory` 工具记录你的推理过程。"""
+    else:
+        prompt += """
+请以【刺杀：玩家X】格式选择刺杀目标，然后说明理由。"""
     
     return prompt
 
 
-# Legacy function compatibility (can be removed if not used elsewhere)
+# ============================================================================
+# 兼容性函数（Deprecated）
+# ============================================================================
+
+
 def get_system_prompt() -> str:
     """Deprecated: Use build_system_prompt instead."""
     return """你是一个正在玩阿瓦隆(Avalon)桌游的玩家。"""

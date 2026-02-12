@@ -1,0 +1,28 @@
+# Verl RL Training Dependencies
+# ==============================
+
+# Verl framework
+verl
+
+# PyTorch (install appropriate version for your CUDA)
+torch
+
+# Hugging Face
+transformers
+datasets
+accelerate
+
+# vLLM for fast rollout generation
+vllm
+
+# Data processing
+pandas
+pyarrow
+
+# Logging & monitoring
+wandb
+tensorboard
+
+# Utilities
+tqdm
+pyyaml
