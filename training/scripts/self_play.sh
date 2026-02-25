@@ -2,80 +2,91 @@
 # ===========================================================================
 # Avalon Self-Play 训练循环（Episode-level GAE + External Critic）
 # ===========================================================================
-# 自动化的自博弈训练流程（8 步）：
-#   1. 用当前模型跑游戏 → 产生新轨迹
-#   2. 导出 JSONL 轨迹
-#   3. Critic 推理 V(s)                   ← 新增
-#   4. GAE 计算 advantage                  ← 新增
-#   5. 数据预处理（注入 advantage）→ parquet ← 修改
-#   6. Verl 训练 actor（precomputed adv）   ← 修改
-#   7. 训练 critic                          ← 新增
-#   8. 合并 actor checkpoint
-#
-# Critic 在 Verl 外部独立训练，提供 episode 级别（跨决策点）的 GAE advantage，
-# 实现 credit assignment。整体训练仍是 on-policy 的自博弈循环。
+# 所有参数由 YAML 配置文件定义。新实验只需复制 YAML、修改参数、运行。
+# 所有产出物保存在 experiments/<experiment_name>/ 下。
 #
 # 用法:
-#   bash training/scripts/self_play.sh
+#   bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
+#   bash training/scripts/self_play.sh training/configs/exp_lr1e5.yaml
 #
-# 可通过环境变量配置:
-#   ROUNDS=10 GAMES_PER_ROUND=50 bash training/scripts/self_play.sh
+# 断点续训 (通过环境变量):
+#   RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
+#       bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
 # ===========================================================================
 
 set -e
 
 # ===========================================================================
-# 配置
+# 加载配置
 # ===========================================================================
 
-# --- 断点续训 ---
-# 从第几轮的第几步恢复（默认从头开始）
-# 步骤编号: 1-2=采样, 3=Critic推理, 4=GAE, 5=预处理, 6=Actor训练, 7=Critic训练, 8=合并
-# 例: RESUME_FROM_ROUND=1 RESUME_FROM_STEP=3  → 从第1轮的Critic推理开始
-RESUME_FROM_ROUND="${RESUME_FROM_ROUND:-0}"
-RESUME_FROM_STEP="${RESUME_FROM_STEP:-0}"
+CONFIG_FILE="${1:?用法: bash self_play.sh <config.yaml>}"
 
-# --- 自博弈轮次 ---
-ROUNDS="${ROUNDS:-5}"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "ERROR: 配置文件不存在: ${CONFIG_FILE}"
+    exit 1
+fi
 
-# 每轮游戏数量
-GAMES_PER_ROUND="${GAMES_PER_ROUND:-50}"
+# 从 YAML 读取配置值的辅助函数
+# 用法: cfg <key.path> [default_value]
+cfg() {
+    python3 -c "
+import yaml, sys, functools, operator
+c = yaml.safe_load(open(sys.argv[1]))
+keys = sys.argv[2].split('.')
+try:
+    print(functools.reduce(operator.getitem, keys, c))
+except (KeyError, TypeError):
+    if len(sys.argv) > 3:
+        print(sys.argv[3])
+    else:
+        print('', end=''); sys.exit(1)
+" "${CONFIG_FILE}" "$1" "${2:-}"
+}
 
-# 初始模型（第一轮使用）
-BASE_MODEL="${BASE_MODEL:-/mnt/iem-nas/home/share/llm_share/models/Qwen3-14B}"
+# --- 实验名称: YAML 中定义，或使用 YAML 文件名 ---
+EXPERIMENT_NAME=$(cfg experiment_name "")
+if [ -z "${EXPERIMENT_NAME}" ]; then
+    EXPERIMENT_NAME=$(basename "${CONFIG_FILE}" .yaml)
+fi
 
-# 每轮 Verl 训练步数（较小，因为会频繁刷新数据）
-TRAIN_EPOCHS="${TRAIN_EPOCHS:-20}"
-
-# vLLM 服务配置（用于跑游戏时的推理）
-VLLM_PORT="${VLLM_PORT:-8000}"
-VLLM_GPU_UTIL="${VLLM_GPU_UTIL:-0.85}"
-VLLM_TP="${VLLM_TP:-8}"              # tensor-parallel size（14B 模型 TP=2 即可）
-
-# 游戏配置
-PLAYER_COUNT="${PLAYER_COUNT:-5}"
-PARALLEL="${PARALLEL:-10}"            # 并发游戏数，8卡可以大幅提高
-
-# Verl 训练配置
-N_GPUS="${N_GPUS:-8}"                 # 使用全部 GPU 做数据并行训练
-BATCH_SIZE="${BATCH_SIZE:-128}"
-REWARD_FN_PATH="${REWARD_FN_PATH:-training/reward/avalon_reward.py}"
-
-# Critic / GAE 配置
-CRITIC_EPOCHS="${CRITIC_EPOCHS:-3}"
-CRITIC_LR="${CRITIC_LR:-1e-5}"
-CRITIC_BATCH_SIZE="${CRITIC_BATCH_SIZE:-16}"  # 多卡可增大 batch
-GAE_GAMMA="${GAE_GAMMA:-0.99}"
-GAE_LAM="${GAE_LAM:-0.95}"
-
-# 输出目录
-OUTPUT_DIR="${OUTPUT_DIR:-training/self_play}"
-CHECKPOINT_DIR="${OUTPUT_DIR}/checkpoints"
-CRITIC_DIR="${OUTPUT_DIR}/critic"
-DATA_DIR="${OUTPUT_DIR}/data"
-LOG_DIR="${OUTPUT_DIR}/logs"
+# --- 实验输出目录 ---
+EXPERIMENT_DIR="experiments/${EXPERIMENT_NAME}"
+CHECKPOINT_DIR="${EXPERIMENT_DIR}/checkpoints"
+CRITIC_DIR="${EXPERIMENT_DIR}/critic"
+DATA_DIR="${EXPERIMENT_DIR}/data"
+LOG_DIR="${EXPERIMENT_DIR}/logs"
 
 mkdir -p "${CHECKPOINT_DIR}" "${CRITIC_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+
+# 将配置文件复制到实验目录，记录本次实验使用的参数
+cp "${CONFIG_FILE}" "${EXPERIMENT_DIR}/config.yaml"
+
+# --- Self-Play 循环配置 ---
+BASE_MODEL=$(cfg self_play.base_model)
+ROUNDS=$(cfg self_play.rounds)
+GAMES_PER_ROUND=$(cfg self_play.games_per_round)
+PLAYER_COUNT=$(cfg self_play.player_count)
+PARALLEL=$(cfg self_play.parallel)
+
+VLLM_PORT=$(cfg self_play.vllm.port)
+VLLM_GPU_UTIL=$(cfg self_play.vllm.gpu_util)
+VLLM_TP=$(cfg self_play.vllm.tp)
+
+CRITIC_EPOCHS=$(cfg self_play.critic.epochs)
+CRITIC_LR=$(cfg self_play.critic.lr)
+CRITIC_BATCH_SIZE=$(cfg self_play.critic.batch_size)
+
+GAE_GAMMA=$(cfg self_play.gae.gamma)
+GAE_LAM=$(cfg self_play.gae.lam)
+
+# --- 从 VeRL 配置中读取 step 6/8 需要的值 ---
+TRAIN_EPOCHS=$(cfg trainer.total_epochs)
+PROJECT_NAME=$(cfg trainer.project_name)
+
+# --- 断点续训 (仅通过环境变量控制) ---
+RESUME_FROM_ROUND="${RESUME_FROM_ROUND:-0}"
+RESUME_FROM_STEP="${RESUME_FROM_STEP:-0}"
 
 # ===========================================================================
 # 辅助函数
@@ -89,7 +100,6 @@ start_vllm() {
     local model_path=$1
     VLLM_MODEL_NAME=$(basename "${model_path}")
 
-    # 先杀掉占用端口的旧进程
     local old_pid
     old_pid=$(lsof -ti :"${VLLM_PORT}" 2>/dev/null || true)
     if [ -n "$old_pid" ]; then
@@ -99,7 +109,6 @@ start_vllm() {
     fi
 
     log "Starting vLLM server with model: ${model_path} (served as: ${VLLM_MODEL_NAME})"
-    # 用 process group 启动，确保 $! 拿到的是 vLLM 进程 PID（而非 tee）
     python -m vllm.entrypoints.openai.api_server \
         --model "${model_path}" \
         --served-model-name "${VLLM_MODEL_NAME}" \
@@ -113,7 +122,6 @@ start_vllm() {
         > >(tee "${LOG_DIR}/vllm_round_${CURRENT_ROUND}.log") 2>&1 &
     VLLM_PID=$!
 
-    # 等待服务就绪（检查 /v1/models 确认模型名正确）
     log "Waiting for vLLM server (pid=${VLLM_PID})..."
     for i in $(seq 1 360); do
         if curl -s "http://localhost:${VLLM_PORT}/v1/models" 2>/dev/null | grep -q "${VLLM_MODEL_NAME}"; then
@@ -131,23 +139,16 @@ start_vllm() {
 stop_vllm() {
     if [ -n "$VLLM_PID" ]; then
         log "Stopping vLLM server (pid=${VLLM_PID})..."
-
-        # 1) 先尝试 SIGTERM 优雅关闭整个进程组
         kill -- -$VLLM_PID 2>/dev/null || kill $VLLM_PID 2>/dev/null || true
         sleep 2
-
-        # 2) 杀掉所有子进程（Ray worker / multiprocessing）
         pkill -P $VLLM_PID 2>/dev/null || true
         sleep 1
-
-        # 3) 如果还活着，SIGKILL 强杀
         if kill -0 $VLLM_PID 2>/dev/null; then
             log "vLLM still alive, sending SIGKILL..."
             kill -9 -- -$VLLM_PID 2>/dev/null || kill -9 $VLLM_PID 2>/dev/null || true
         fi
         wait $VLLM_PID 2>/dev/null || true
 
-        # 4) 清理可能残留的 vLLM/Ray 相关进程占用该端口
         local remaining
         remaining=$(lsof -ti :"${VLLM_PORT}" 2>/dev/null || true)
         if [ -n "$remaining" ]; then
@@ -155,13 +156,10 @@ stop_vllm() {
             echo "$remaining" | xargs kill -9 2>/dev/null || true
             sleep 2
         fi
-
         VLLM_PID=""
 
-        # 5) 等待 GPU 显存真正释放（最多等 60 秒）
         log "Waiting for GPU memory to be released..."
         for i in $(seq 1 30); do
-            # 检查是否还有 python 进程占用大量 GPU 显存
             local gpu_procs
             gpu_procs=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null || true)
             if [ -z "$gpu_procs" ]; then
@@ -187,7 +185,6 @@ merge_checkpoint() {
         --target_dir "${output_dir}"
 }
 
-# 清理函数
 cleanup() {
     log "Cleaning up..."
     stop_vllm
@@ -202,28 +199,24 @@ echo ""
 echo "============================================================"
 echo "  Avalon Self-Play Training (Episode-level GAE)"
 echo "============================================================"
+echo "  Experiment:          ${EXPERIMENT_NAME}"
+echo "  Config:              ${CONFIG_FILE}"
+echo "  Output:              ${EXPERIMENT_DIR}/"
 echo "  Rounds:              ${ROUNDS}"
 echo "  Games per round:     ${GAMES_PER_ROUND}"
 echo "  Base model:          ${BASE_MODEL}"
-echo "  Batch size:          ${BATCH_SIZE}"
 echo "  Train epochs/round:  ${TRAIN_EPOCHS}"
 echo "  Critic epochs/round: ${CRITIC_EPOCHS}"
-echo "  GAE gamma:           ${GAE_GAMMA}"
-echo "  GAE lambda:          ${GAE_LAM}"
-echo "  Output:              ${OUTPUT_DIR}"
+echo "  GAE gamma/lambda:    ${GAE_GAMMA} / ${GAE_LAM}"
 if [ "${RESUME_FROM_ROUND}" -gt 0 ]; then
 echo "  Resume from:         round ${RESUME_FROM_ROUND}, step ${RESUME_FROM_STEP}"
 fi
 echo "============================================================"
 echo ""
 
-# 当前使用的模型路径
 CURRENT_MODEL="${BASE_MODEL}"
-
-# Critic 模型路径（首轮从 base model 初始化）
 CURRENT_CRITIC="${BASE_MODEL}"
 
-# 如果是断点续训，恢复之前轮次的模型路径
 if [ "${RESUME_FROM_ROUND}" -gt 1 ]; then
     PREV_ROUND=$((RESUME_FROM_ROUND - 1))
     PREV_MERGED="${CHECKPOINT_DIR}/round_${PREV_ROUND}"
@@ -243,20 +236,19 @@ if [ "${RESUME_FROM_ROUND}" -gt 1 ]; then
 fi
 
 for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
-    ROUND_TAG="self_play_r${CURRENT_ROUND}"
+    ROUND_TAG="${EXPERIMENT_NAME}_r${CURRENT_ROUND}"
     ROUND_DATA_DIR="${DATA_DIR}/round_${CURRENT_ROUND}"
     ROUND_JSONL="${ROUND_DATA_DIR}/trajectories.jsonl"
     ROUND_VALUES_JSON="${ROUND_DATA_DIR}/values.json"
     ROUND_ADV_JSON="${ROUND_DATA_DIR}/advantages.json"
     ROUND_PARQUET_DIR="${ROUND_DATA_DIR}/processed"
     ROUND_CRITIC_DIR="${CRITIC_DIR}/round_${CURRENT_ROUND}"
+    ROUND_EXPERIMENT="${EXPERIMENT_NAME}-r${CURRENT_ROUND}"
 
     mkdir -p "${ROUND_DATA_DIR}"
 
-    # 判断当前轮次是否需要跳过（断点续训逻辑）
     if [ "${CURRENT_ROUND}" -lt "${RESUME_FROM_ROUND}" ]; then
         log "Skipping round ${CURRENT_ROUND} (resuming from round ${RESUME_FROM_ROUND})"
-        # 恢复该轮的模型路径（供后续轮次使用）
         if [ -d "${CHECKPOINT_DIR}/round_${CURRENT_ROUND}" ]; then
             CURRENT_MODEL="${CHECKPOINT_DIR}/round_${CURRENT_ROUND}"
         fi
@@ -266,14 +258,12 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
         continue
     fi
 
-    # 判断当前步骤是否应该跳过
-    # 仅在 resume 目标轮次才按 step 跳过，之后的轮次全部执行
     should_skip_step() {
         local step=$1
         if [ "${CURRENT_ROUND}" -eq "${RESUME_FROM_ROUND}" ] && [ "$step" -lt "${RESUME_FROM_STEP}" ]; then
-            return 0  # true, should skip
+            return 0
         fi
-        return 1  # false, should run
+        return 1
     }
 
     echo ""
@@ -284,19 +274,15 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     log "=========================================="
 
     # ------------------------------------------------------------------
-    # Step 1+2: 用当前模型跑游戏并直接导出轨迹（跳过 MongoDB）
+    # Step 1+2: 用当前模型跑游戏并直接导出轨迹
     # ------------------------------------------------------------------
     if should_skip_step 2; then
-        log "[Step 1-2/8] SKIPPED (resume mode, trajectories already exist)"
+        log "[Step 1-2/8] SKIPPED (resume mode)"
     else
-        log "[Step 1-2/8] 启动 vLLM 并运行 ${GAMES_PER_ROUND} 局游戏 (--no-mongo)..."
+        log "[Step 1-2/8] 启动 vLLM 并运行 ${GAMES_PER_ROUND} 局游戏..."
 
         start_vllm "${CURRENT_MODEL}"
 
-        # 用 vLLM 作为推理后端跑游戏，--no-mongo 跳过 MongoDB，直接导出 JSONL
-        # VLLM_MODEL_NAME 已在 start_vllm() 中设置为 basename
-
-        # 覆盖 .env 中的 VLLM_BASE_URL，确保连接到本脚本启动的 vLLM 服务
         export VLLM_BASE_URL="http://localhost:${VLLM_PORT}/v1"
         export AVAILABLE_MODELS="${VLLM_MODEL_NAME}:vllm"
 
@@ -367,41 +353,15 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 6/8] Actor 训练 (precomputed advantage, ${TRAIN_EPOCHS} epochs)..."
 
-        EXPERIMENT_NAME="self-play-gae-r${CURRENT_ROUND}"
-
-        # 通过 wrapper 脚本启动，确保自定义 advantage estimator 在同一进程中注册
+        # run_ppo.py 自动加载 YAML 中的 VeRL 参数
+        # 这里只传每轮变化的运行时路径
         PYTHONUNBUFFERED=1 python training/scripts/run_ppo.py \
+            --avalon-config "${CONFIG_FILE}" \
             data.train_files="${ROUND_PARQUET_DIR}/train.parquet" \
             data.val_files="${ROUND_PARQUET_DIR}/test.parquet" \
-            data.train_batch_size="${BATCH_SIZE}" \
-            data.max_prompt_length=24000 \
-            data.max_response_length=24000 \
-            algorithm.adv_estimator=precomputed \
-            algorithm.kl_ctrl.kl_coef=0.001 \
             actor_rollout_ref.model.path="${CURRENT_MODEL}" \
-            actor_rollout_ref.actor.optim.lr=1e-6 \
-            actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-            actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
-            actor_rollout_ref.actor.clip_ratio=0.2 \
-            actor_rollout_ref.rollout.name=vllm \
-            actor_rollout_ref.rollout.temperature=0.7 \
-            actor_rollout_ref.rollout.top_p=0.9 \
-            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
-            actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
-            actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-            custom_reward_function.path="${REWARD_FN_PATH}" \
-            custom_reward_function.name=compute_score \
-            trainer.project_name=avalon-self-play \
-            trainer.experiment_name="${EXPERIMENT_NAME}" \
-            'trainer.logger=["console","wandb"]' \
-            trainer.n_gpus_per_node="${N_GPUS}" \
-            trainer.nnodes=1 \
-            trainer.save_freq="${TRAIN_EPOCHS}" \
-            trainer.test_freq=10 \
-            trainer.total_epochs="${TRAIN_EPOCHS}" \
-            trainer.val_before_train=false \
-            2>&1 | tee "${LOG_DIR}/${EXPERIMENT_NAME}.log"
+            trainer.experiment_name="${ROUND_EXPERIMENT}" \
+            2>&1 | tee "${LOG_DIR}/${ROUND_EXPERIMENT}.log"
     fi
 
     # ------------------------------------------------------------------
@@ -433,9 +393,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 8/8] 合并 actor checkpoint..."
 
-        EXPERIMENT_NAME="self-play-gae-r${CURRENT_ROUND}"
-        # Verl 默认保存路径: checkpoints/{project}/{experiment}/global_step_{N}/actor
-        LATEST_CKPT="checkpoints/avalon-self-play/${EXPERIMENT_NAME}/global_step_${TRAIN_EPOCHS}/actor"
+        LATEST_CKPT="checkpoints/${PROJECT_NAME}/${ROUND_EXPERIMENT}/global_step_${TRAIN_EPOCHS}/actor"
         MERGED_MODEL="${CHECKPOINT_DIR}/round_${CURRENT_ROUND}"
 
         if [ -d "${LATEST_CKPT}" ]; then
@@ -454,13 +412,12 @@ echo ""
 echo "============================================================"
 echo "  Self-Play Training Complete!"
 echo "============================================================"
+echo "  Experiment:      ${EXPERIMENT_NAME}"
+echo "  Config:          ${CONFIG_FILE}"
 echo "  Total rounds:    ${ROUNDS}"
 echo "  Final actor:     ${CURRENT_MODEL}"
 echo "  Final critic:    ${CURRENT_CRITIC}"
-echo "  All data:        ${DATA_DIR}/"
-echo "  All logs:        ${LOG_DIR}/"
-echo "  Checkpoints:     ${CHECKPOINT_DIR}/"
-echo "  Critic models:   ${CRITIC_DIR}/"
+echo "  Experiment dir:  ${EXPERIMENT_DIR}/"
 echo "============================================================"
 echo ""
 echo "评估最终模型:"

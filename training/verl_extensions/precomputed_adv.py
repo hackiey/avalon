@@ -45,6 +45,6 @@ def compute_precomputed_advantage(token_level_rewards, response_mask, **kwargs):
     advantages = per_seq_advantage * response_mask
 
     # returns 复用 advantages（因为 Verl 的 value loss 不再需要）
-    returns = advantages.clone()
+    returns = advantages.detach()
 
     return advantages, returns

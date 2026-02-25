@@ -1,78 +1,93 @@
 # ===========================================================================
-# Avalon PPO Training Configuration (Episode-level GAE + External Critic)
+# Avalon 实验配置（唯一参数来源）
 # ===========================================================================
-# 使用外部 Critic + GAE 计算预计算的 advantage，
-# Verl 内部不再需要 critic 模型，通过自定义 estimator 直接使用。
+# 一个 YAML = 一个完整实验。新实验只需复制本文件、修改参数、运行:
 #
-# 使用方法:
-#   python -m verl.trainer.main_ppo \
-#       --config training/configs/ppo_avalon.yaml
+#   bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
+#   bash training/scripts/self_play.sh training/configs/exp_lr1e5.yaml
 #
-# 或通过 self_play.sh 启动: bash training/scripts/self_play.sh
+# 所有产出物保存在 experiments/<experiment_name>/ 下。
 #
-# 注意: 启动前需要先 import 注册自定义 estimator:
-#   import training.verl_extensions.precomputed_adv
+# 断点续训:
+#   RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
+#       bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
 # ===========================================================================
 
-# --- 数据配置 ---
+# 实验名称（留空则自动使用 YAML 文件名，如 ppo_avalon）
+# 所有产出物保存在 experiments/<experiment_name>/
+experiment_name: ""
+
+# ===== Self-Play 循环配置 =====
+self_play:
+  base_model: /mnt/iem-nas/home/share/llm_share/models/Qwen3-14B
+  rounds: 5
+  games_per_round: 50
+  player_count: 5
+  parallel: 10                    # 并发游戏数
+
+  # 自博弈阶段的 vLLM 推理服务
+  vllm:
+    port: 8000
+    gpu_util: 0.85
+    tp: 8                         # tensor-parallel (自博弈推理用，与训练 rollout 无关)
+
+  # 外部 Critic 训练
+  critic:
+    epochs: 3
+    lr: 1e-5
+    batch_size: 16
+
+  # GAE 计算
+  gae:
+    gamma: 0.99
+    lam: 0.95
+
+# ===== VeRL PPO 训练配置 =====
 data:
-  train_files: data/processed/train.parquet
-  val_files: data/processed/test.parquet
   train_batch_size: 128
-  max_prompt_length: 2048        # Avalon 游戏上下文较长
-  max_response_length: 512
-  need_tools_kwargs: true         # 启用 tool-calling 支持 (Avalon function calling)
+  max_prompt_length: 8192         # 实测 max ~2939
+  max_response_length: 8192       # 含 thinking 的完整 response
+  need_tools_kwargs: true
 
-# --- 算法配置 ---
 algorithm:
-  adv_estimator: precomputed     # 使用预计算的 advantage (外部 GAE)
+  adv_estimator: precomputed
   kl_ctrl:
     kl_coef: 0.001
 
-# --- Actor + Rollout + Reference 配置 ---
 actor_rollout_ref:
   model:
-    path: Qwen/Qwen2.5-7B-Instruct
+    enable_gradient_checkpointing: true
   actor:
     optim:
-      lr: 1e-6
+      lr: 3e-6
     ppo_mini_batch_size: 32
     ppo_micro_batch_size_per_gpu: 2
     clip_ratio: 0.2
+    fsdp_config:
+      forward_prefetch: true
   rollout:
     name: vllm
     temperature: 0.7
     top_p: 0.9
     log_prob_micro_batch_size_per_gpu: 4
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 2
     gpu_memory_utilization: 0.5
+    disable_log_stats: false
   ref:
     log_prob_micro_batch_size_per_gpu: 2
 
-# --- Critic 配置 ---
-# 不再需要 Verl 内置 critic，外部独立训练
-# critic:
-#   model:
-#     path: Qwen/Qwen2.5-7B-Instruct
-#   optim:
-#     lr: 1e-5
-#   ppo_micro_batch_size_per_gpu: 2
-
-# --- 自定义奖励函数 ---
 custom_reward_function:
   path: training/reward/avalon_reward.py
   name: compute_score
 
-# --- Trainer 配置 ---
 trainer:
-  project_name: avalon-rl
-  experiment_name: ppo-avalon-gae
+  project_name: avalon-self-play
   logger:
     - console
     - wandb
-  n_gpus_per_node: 1
+  n_gpus_per_node: 8
   nnodes: 1
   save_freq: 20
   test_freq: 10
-  total_epochs: 100
+  total_epochs: 20
   val_before_train: false

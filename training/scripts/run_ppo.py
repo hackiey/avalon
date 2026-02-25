@@ -1,34 +1,108 @@
-"""veRL PPO 训练 wrapper — 在 Ray actor 进程中注册自定义扩展。
+"""veRL PPO 训练 wrapper — 加载 Avalon 配置 + 在 Ray actor 进程中注册自定义扩展。
 
-解决的问题:
-  register_adv_est("precomputed") 将自定义 advantage estimator 注册到
-  core_algos.ADV_ESTIMATOR_REGISTRY 全局字典中。但 Verl 的 TaskRunner
-  运行在独立的 Ray actor 进程中 (ray.remote)，driver 进程中的注册
-  不会传递到 Ray actor 进程，导致 get_adv_estimator_fn("precomputed") 失败。
+功能:
+  1. 加载 ppo_avalon.yaml 配置文件，转为 Hydra CLI 覆盖注入 sys.argv。
+     VeRL 的默认配置 (ppo_trainer.yaml) 完整保留，我们的 yaml 只覆盖
+     关心的字段。命令行参数优先级最高（self_play.sh 的动态值可覆盖 yaml）。
 
-  解决方案: 扩展 TaskRunner，在其 run() 方法中（即 Ray actor 进程内）
-  重新导入并注册扩展模块。通过 monkey-patch main_ppo.TaskRunner 实现。
+  2. 扩展 TaskRunner，在 Ray actor 进程中注册自定义 advantage estimator
+     和 tool-calling patch。
 
-用法 (与 python -m verl.trainer.main_ppo 参数完全相同):
+用法:
+    # 自动加载 ppo_avalon.yaml + 命令行覆盖动态值
     python training/scripts/run_ppo.py \\
         data.train_files=... \\
-        algorithm.adv_estimator=precomputed \\
-        ...
+        actor_rollout_ref.model.path=... \\
+        trainer.experiment_name=...
+
+    # 也可用 --avalon-config 指定其他 yaml
+    python training/scripts/run_ppo.py \\
+        --avalon-config path/to/custom.yaml \\
+        data.train_files=...
 """
 
 import os
 import sys
 
 # 确保项目根目录在 sys.path 中，使 `import training.xxx` 可用
-# 脚本位于 training/scripts/run_ppo.py，项目根目录在两级之上
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# 同时写入 PYTHONPATH 环境变量，确保 Ray worker 子进程也能 import training.xxx
 _existing_pythonpath = os.environ.get("PYTHONPATH", "")
 if _PROJECT_ROOT not in _existing_pythonpath:
     os.environ["PYTHONPATH"] = _PROJECT_ROOT + (":" + _existing_pythonpath if _existing_pythonpath else "")
+
+# === 加载 Avalon YAML 配置，注入为 Hydra CLI 覆盖 ===
+_DEFAULT_CONFIG = os.path.join(_PROJECT_ROOT, "training", "configs", "ppo_avalon.yaml")
+
+
+_VERL_IGNORED_KEYS = {"self_play", "experiment_name"}
+
+
+def _inject_yaml_overrides():
+    """加载 YAML 配置并转为 Hydra 命令行覆盖。
+
+    处理流程:
+      1. 从 sys.argv 提取 --avalon-config 路径（默认使用 ppo_avalon.yaml）
+      2. 解析 YAML，过滤掉 self_play 等非 VeRL 字段
+      3. 将嵌套 dict 展平为 key.subkey=value 格式
+      4. 注入到 sys.argv 前部（命令行参数排在后面，优先级更高）
+    """
+    import yaml
+
+    config_path = _DEFAULT_CONFIG
+    remaining_args = []
+
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] == "--avalon-config" and i + 1 < len(sys.argv):
+            config_path = sys.argv[i + 1]
+            i += 2
+        elif sys.argv[i].startswith("--avalon-config="):
+            config_path = sys.argv[i].split("=", 1)[1]
+            i += 1
+        else:
+            remaining_args.append(sys.argv[i])
+            i += 1
+
+    if not os.path.isfile(config_path):
+        print(f"WARNING: Avalon config not found at {config_path}, using VeRL defaults only")
+        return
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    if not config:
+        return
+
+    # 过滤掉非 VeRL 的顶层字段
+    for key in _VERL_IGNORED_KEYS:
+        config.pop(key, None)
+
+    def _flatten(d, prefix=""):
+        overrides = []
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if v is None or (isinstance(v, str) and v == "???"):
+                continue
+            elif isinstance(v, dict):
+                overrides.extend(_flatten(v, key))
+            elif isinstance(v, list):
+                items = ",".join(str(x) for x in v)
+                overrides.append(f"'{key}=[{items}]'")
+            elif isinstance(v, bool):
+                overrides.append(f"{key}={'true' if v else 'false'}")
+            else:
+                overrides.append(f"{key}={v}")
+        return overrides
+
+    yaml_overrides = _flatten(config)
+    sys.argv = [sys.argv[0]] + yaml_overrides + remaining_args
+    print(f"Loaded Avalon config from {config_path} ({len(yaml_overrides)} overrides)")
+
+
+_inject_yaml_overrides()
 
 # 在 driver 进程中注册（对 Ray local_mode 或非 Ray 场景有用）
 import training.verl_extensions.precomputed_adv  # noqa: F401 — registers "precomputed"
