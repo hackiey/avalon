@@ -1,6 +1,6 @@
 # Avalon LLM Training Engine
 
-An engine for training and observing LLMs playing the Avalon board game. Supports multi-LLM battles, human participation, real-time spectating, game replay, statistics, batch execution, and training data export.
+An engine for training and observing LLMs playing the Avalon board game. Supports multi-LLM battles, human participation, real-time spectating, game replay, statistics, batch execution, and RL training data export.
 
 [**中文文档 (Chinese)**](./README_CN.md)
 
@@ -13,6 +13,7 @@ An engine for training and observing LLMs playing the Avalon board game. Support
 - **Statistics**: View win rates by model, role, and more
 - **Batch Execution**: Run games in bulk via CLI with parallel support
 - **Training Data Export**: Export game trajectories as JSONL for model training
+- **RL Training**: On-policy self-play with Episode-level GAE + external Critic (Verl + PPO)
 
 ## Quick Start
 
@@ -104,6 +105,9 @@ python -m training.run_batch run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
 # Parallel execution (4 games at once)
 python -m training.run_batch run -n 100 -m "gpt-4o:openai" --parallel 4
 
+# Without MongoDB (write directly to JSONL)
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --no-mongo --output ./data/games.jsonl
+
 # With experiment tag
 python -m training.run_batch run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
 
@@ -116,6 +120,35 @@ python -m training.run_batch export --batch-id <BATCH_ID> --output ./data/traini
 # Export by tag
 python -m training.run_batch export --tag "exp_v1" --output ./data/exp_v1.jsonl
 ```
+
+## RL Training (Self-Play)
+
+Train LLMs via on-policy self-play with Episode-level GAE. See [training/README.md](./training/README.md) for full details.
+
+```bash
+# Copy and edit the config template
+cp training/configs/ppo_avalon.yaml training/configs/my_exp.yaml
+
+# Start self-play training
+bash training/scripts/self_play.sh training/configs/my_exp.yaml
+
+# Resume from a checkpoint
+RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
+    bash training/scripts/self_play.sh training/configs/my_exp.yaml
+```
+
+Each round of self-play runs the full pipeline automatically:
+
+1. Run games with the current model via vLLM
+2. Compute game statistics (win rates → wandb)
+3. Critic inference: estimate V(s) for each decision point
+4. Episode-level GAE: compute advantage with credit assignment
+5. Preprocess data → parquet (with precomputed advantage)
+6. Verl PPO: train actor
+7. Train Critic
+8. Merge checkpoint → next round model
+
+All outputs are saved under `experiments/<experiment_name>/`.
 
 ## Project Structure
 
@@ -133,7 +166,6 @@ avalon/
 │   ├── llm/                        # LLM integration
 │   │   ├── base.py                 # Abstract base classes
 │   │   ├── providers.py            # Multi-provider support
-│   │   ├── prompts.py              # Prompt templates
 │   │   ├── player.py               # LLM player
 │   │   └── tools.py                # LLM tools / function calling
 │   ├── api/                        # REST API
@@ -154,12 +186,13 @@ avalon/
 ├── training/                       # RL training (Verl + Episode-level GAE)
 │   ├── run_batch.py                # Batch game CLI tool
 │   ├── data/                       # Data preprocessing
-│   ├── reward/                     # Reward functions
+│   ├── reward/                     # Reward functions (GAE + length penalty)
 │   ├── critic/                     # Critic model (value head train/infer)
 │   ├── advantage/                  # Episode-level GAE computation
+│   ├── stats/                      # Per-round game statistics & wandb logging
 │   ├── verl_extensions/            # Custom Verl advantage estimator
-│   ├── configs/                    # Training configs
-│   ├── scripts/                    # Training scripts (8-step self-play)
+│   ├── configs/                    # Training config templates (YAML)
+│   ├── scripts/                    # Self-play loop & PPO wrapper
 │   └── eval/                       # Model evaluation
 ├── web/                            # React frontend
 │   ├── src/
@@ -218,6 +251,12 @@ Avalon is a social deduction game where players are divided into Good and Evil t
 - Zustand (state management) + Socket.IO Client
 - Recharts (charts)
 - Lucide React (icons)
+
+**RL Training:**
+- Verl (PPO framework)
+- vLLM (self-play inference)
+- PyTorch + HuggingFace Transformers (Critic model)
+- wandb (experiment tracking)
 
 ## License
 

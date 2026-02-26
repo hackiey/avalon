@@ -137,7 +137,7 @@ class LLMPlayer:
         try:
             result = await self.provider.generate(messages, temperature=0.8, tools=tools)
 
-            print(f"[DEBUG] Discuss as leader result: {result}")
+            # print(f"[DEBUG] Discuss as leader result: {result}")
             
             # Build llm_output from raw result
             llm_output = self._build_llm_output(result)

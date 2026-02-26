@@ -1,6 +1,6 @@
 # Avalon LLM Training Engine
 
-一个用于训练和观察 LLM 玩阿瓦隆游戏的引擎。支持多个 LLM 之间的对战、人类玩家参与、实时观战、历史回放、统计分析、批量对局和训练数据导出。
+一个用于训练和观察 LLM 玩阿瓦隆游戏的引擎。支持多个 LLM 之间的对战、人类玩家参与、实时观战、历史回放、统计分析、批量对局、训练数据导出，以及基于 RL 自博弈的模型训练。
 
 ## 功能特性
 
@@ -11,6 +11,7 @@
 - **统计分析**: 查看模型胜率、角色胜率等统计数据
 - **批量对局**: 通过 CLI 工具批量运行游戏，支持并行执行
 - **训练数据导出**: 将游戏轨迹导出为 JSONL 格式，用于模型训练
+- **RL 训练**: 基于自博弈 + Episode-level GAE + 外部 Critic 进行在线策略强化学习（Verl + PPO）
 
 ## 快速开始
 
@@ -106,6 +107,9 @@ python -m training.run_batch run -n 100 -m "qwen-plus:qwen,gpt-4o:openai"
 # 并行运行 (4 局同时进行)
 python -m training.run_batch run -n 100 -m "gpt-4o:openai" --parallel 4
 
+# 不使用 MongoDB，直接输出 JSONL
+python -m training.run_batch run -n 100 -m "gpt-4o:openai" --no-mongo --output ./data/games.jsonl
+
 # 带实验标签
 python -m training.run_batch run -n 100 -m "gpt-4o:openai" --tag "exp_v1"
 
@@ -118,6 +122,35 @@ python -m training.run_batch export --batch-id <BATCH_ID> --output ./data/traini
 # 按标签导出
 python -m training.run_batch export --tag "exp_v1" --output ./data/exp_v1.jsonl
 ```
+
+## RL 训练（自博弈）
+
+基于在线自博弈 + Episode-level GAE 进行 PPO 训练。详见 [training/README.md](./training/README.md)。
+
+```bash
+# 复制并编辑配置模板
+cp training/configs/ppo_avalon.yaml training/configs/my_exp.yaml
+
+# 开始自博弈训练
+bash training/scripts/self_play.sh training/configs/my_exp.yaml
+
+# 断点续训
+RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
+    bash training/scripts/self_play.sh training/configs/my_exp.yaml
+```
+
+每轮自博弈自动完成完整流程：
+
+1. 用当前模型通过 vLLM 跑游戏
+2. 计算游戏统计（胜率 → wandb）
+3. Critic 推理：为每个决策点估计 V(s)
+4. Episode-level GAE：带 credit assignment 的 advantage 计算
+5. 数据预处理 → parquet（注入预计算 advantage）
+6. Verl PPO 训练 actor
+7. 训练 Critic
+8. 合并 checkpoint → 下一轮模型
+
+所有产出物保存在 `experiments/<experiment_name>/` 下。
 
 ## 项目结构
 
@@ -135,7 +168,6 @@ avalon/
 │   ├── llm/                        # LLM 集成
 │   │   ├── base.py                 # 抽象基类
 │   │   ├── providers.py            # 多厂商实现
-│   │   ├── prompts.py              # Prompt 模板
 │   │   ├── player.py               # LLM 玩家
 │   │   └── tools.py                # LLM 工具/函数调用
 │   ├── api/                        # REST API
@@ -156,12 +188,13 @@ avalon/
 ├── training/                       # RL 训练 (Verl + Episode-level GAE)
 │   ├── run_batch.py                # 批量对局 CLI 工具
 │   ├── data/                       # 数据预处理
-│   ├── reward/                     # 奖励函数
+│   ├── reward/                     # 奖励函数（GAE advantage + 长度惩罚）
 │   ├── critic/                     # Critic 模型 (value head 训练/推理)
 │   ├── advantage/                  # Episode 级 GAE 计算
+│   ├── stats/                      # 每轮游戏统计 & wandb 上报
 │   ├── verl_extensions/            # 自定义 Verl advantage estimator
-│   ├── configs/                    # 训练配置
-│   ├── scripts/                    # 训练脚本 (8 步自博弈)
+│   ├── configs/                    # 训练配置模板 (YAML)
+│   ├── scripts/                    # 自博弈循环 & PPO wrapper
 │   └── eval/                       # 模型评估
 ├── web/                            # React 前端
 │   ├── src/
@@ -220,6 +253,12 @@ avalon/
 - Zustand (状态管理) + Socket.IO Client
 - Recharts (统计图表)
 - Lucide React (图标)
+
+**RL 训练:**
+- Verl (PPO 框架)
+- vLLM (自博弈推理)
+- PyTorch + HuggingFace Transformers (Critic 模型)
+- wandb (实验追踪)
 
 ## License
 

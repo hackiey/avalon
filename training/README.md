@@ -9,19 +9,23 @@ training/
 ├── data/
 │   └── preprocess.py              # JSONL 轨迹 -> Verl parquet 格式转换
 ├── reward/
-│   └── avalon_reward.py           # Avalon 奖励函数（游戏胜负 / 预计算 advantage）
+│   └── avalon_reward.py           # Avalon 奖励函数（GAE advantage / 游戏胜负 / 长度惩罚）
 ├── critic/
 │   ├── model.py                   # Critic 模型定义 (base LLM + value head)
 │   ├── train.py                   # Critic 训练 (MSE loss)
 │   └── infer.py                   # Critic 推理 V(s)
 ├── advantage/
 │   └── compute.py                 # Episode 级 GAE 计算
+├── stats/
+│   └── game_stats.py              # 每轮游戏统计（胜率、角色胜率、wandb 上报）
 ├── verl_extensions/
-│   └── precomputed_adv.py         # 自定义 Verl advantage estimator
+│   ├── precomputed_adv.py         # 自定义 Verl advantage estimator
+│   └── tool_chat_patch.py         # Tool-calling prompt 兼容补丁
 ├── configs/
-│   └── ppo_avalon.yaml            # 训练配置
+│   └── ppo_avalon.yaml            # 训练配置模板（一个 YAML = 一个完整实验）
 ├── scripts/
-│   └── self_play.sh               # 自博弈循环 (8 步流程)
+│   ├── self_play.sh               # 自博弈循环（9 步流程，接受 YAML 配置）
+│   └── run_ppo.py                 # VeRL PPO 训练 wrapper（加载 YAML 配置）
 ├── eval/
 │   └── evaluate.py                # 训练后模型评估
 ├── run_batch.py                   # 批量对局 CLI 工具
@@ -34,7 +38,7 @@ training/
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+pip install -r training/requirements.txt
 ```
 
 > 注意：请根据你的 CUDA 版本安装对应的 PyTorch 和 vLLM。参考 [Verl 安装指南](https://verl.readthedocs.io/en/latest/start/install.html)。
@@ -42,30 +46,110 @@ pip install -r requirements.txt
 ### 2. 下载基础模型
 
 ```bash
-python3 -c "import transformers; transformers.pipeline('text-generation', model='Qwen/Qwen2.5-7B-Instruct')"
+# 示例：使用 Qwen3-14B（也可使用其他支持工具调用的模型）
+python3 -c "import transformers; transformers.pipeline('text-generation', model='Qwen/Qwen3-14B')"
 ```
 
-### 3. 开始训练
+### 3. 配置实验 YAML
 
-自博弈循环会自动完成完整的 8 步流程：
+复制模板并修改参数：
 
 ```bash
-# 默认: 5 轮自博弈
-bash training/scripts/self_play.sh
-
-# 自定义配置
-ROUNDS=10 GAMES_PER_ROUND=200 GAE_GAMMA=0.99 GAE_LAM=0.95 \
-    bash training/scripts/self_play.sh
+cp training/configs/ppo_avalon.yaml training/configs/my_exp.yaml
+# 编辑 my_exp.yaml，修改 base_model 路径等参数
 ```
 
-### 4. 评估训练效果
+### 4. 开始训练
+
+```bash
+bash training/scripts/self_play.sh training/configs/my_exp.yaml
+```
+
+所有产出物（数据、checkpoint、日志）自动保存在 `experiments/<experiment_name>/`。
+
+### 5. 断点续训
+
+通过环境变量从指定轮次、步骤恢复：
+
+```bash
+RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
+    bash training/scripts/self_play.sh training/configs/my_exp.yaml
+```
+
+### 6. 评估训练效果
 
 ```bash
 python -m training.eval.evaluate \
-    --model_path checkpoints/avalon-self-play/self-play-gae-r5/actor/huggingface \
+    --model_path experiments/my_exp/checkpoints/round_5 \
     --num_games 50 \
-    --player_count 5
+    --auto_serve
 ```
+
+---
+
+## 实验配置 YAML
+
+**一个 YAML = 一个完整实验。** 所有参数集中在一个文件中，新实验只需复制模板修改参数即可。
+
+```yaml
+experiment_name: "my_exp"       # 留空则使用 YAML 文件名
+                                # 产出物保存在 experiments/my_exp/
+
+# ===== Self-Play 循环配置 =====
+self_play:
+  base_model: /path/to/model
+  rounds: 5                     # 自博弈总轮数
+  games_per_round: 50           # 每轮游戏数
+  player_count: 5
+  parallel: 10                  # 并发游戏数
+
+  vllm:
+    port: 8000
+    gpu_util: 0.85
+    tp: 8                       # tensor-parallel（自博弈推理）
+
+  critic:
+    epochs: 3
+    lr: 1e-5
+    batch_size: 16
+    gradient_accumulation_steps: 1
+
+  gae:
+    gamma: 0.99                 # 折扣因子
+    lam: 0.95                   # GAE lambda
+
+  length_penalty:               # 响应长度惩罚（可选）
+    start_tokens: 5000
+    cap_tokens: 8192
+    max_penalty: -1.0
+    power: 2.0
+
+# ===== VeRL PPO 训练配置 =====
+data:
+  train_batch_size: 128
+  max_prompt_length: 8192
+  max_response_length: 8192
+
+algorithm:
+  adv_estimator: precomputed
+  kl_ctrl:
+    kl_coef: 0.001
+
+actor_rollout_ref:
+  actor:
+    optim:
+      lr: 3e-6
+    clip_ratio: 0.2
+    entropy_coeff: 0.0          # 熵系数（可选，抑制策略坍塌）
+
+trainer:
+  project_name: avalon-self-play
+  logger: [console, wandb]
+  n_gpus_per_node: 8
+  total_epochs: 4
+```
+
+---
 
 ## 训练原理
 
@@ -101,18 +185,20 @@ t=7: (terminal)       r=-1                                           ← 好人�
 - `δ4` 是负的（投票后 V 从 0.2 变成 -0.1）→ 这个投票决策会被惩罚
 - 这就是 GAE 的 **credit assignment** 能力
 
+---
+
 ## 数据流（每轮 Self-Play）
 
 ```
-Step 1: vLLM 跑游戏
+Step 1+2: vLLM 跑游戏 + 直接导出 JSONL 轨迹
     ↓
-Step 2: 导出 JSONL 轨迹
+Step 2.5: 游戏统计（胜率、角色胜率 → wandb + JSONL 汇总）
     ↓
 Step 3: Critic 推理 V(s)           ← 为每个决策点估计状态价值
     ↓
 Step 4: GAE 计算 advantage          ← 按 (game_id, player_seat) 分组
     ↓
-Step 5: 数据预处理 → parquet        ← 注入 precomputed_advantage
+Step 5: 数据预处理 → parquet        ← 注入 precomputed_advantage + response_token_count
     ↓
 Step 6: Verl 训练 actor             ← adv_estimator=precomputed
     ↓
@@ -123,11 +209,13 @@ Step 8: 合并 actor checkpoint       ← 下一轮模型
 
 每轮结束后，更新后的 actor 用于下一轮的游戏采样，更新后的 critic 用于下一轮的 V(s) 推理。
 
+---
+
 ## 各模块详解
 
 ### Critic 模型 (`training/critic/model.py`)
 
-- 基于同一个 base model (Qwen2.5-7B-Instruct) + 线性 value head
+- 基于同一个 base model + 线性 value head
 - 使用 `AutoModelForSequenceClassification(num_labels=1)` 实现
 - 输入: tokenized prompt (游戏状态描述) → 输出: scalar V(s)
 - Value head 初始化为接近 0 的小值，确保冷启动时 V(s) ≈ 0
@@ -136,7 +224,7 @@ Step 8: 合并 actor checkpoint       ← 下一轮模型
 
 ```bash
 python -m training.critic.train \
-    --model_path Qwen/Qwen2.5-7B-Instruct \
+    --model_path /path/to/base_model \
     --data_file data/processed/train.parquet \
     --output_dir training/self_play/critic \
     --epochs 3 --lr 1e-5 --bf16
@@ -182,6 +270,64 @@ for t in reversed(range(T)):
     advantage = delta + gamma * lam * next_advantage
 ```
 
+### 游戏统计 (`training/stats/game_stats.py`)
+
+每轮自博弈后自动计算并记录：
+
+- 好人/坏人胜率、梅林刺杀率
+- 各角色胜率
+- 平均每局轮数、决策数
+- 任务成功/失败比例
+
+```bash
+python -m training.stats.game_stats \
+    --input_jsonl data/round_1/trajectories.jsonl \
+    --round 1 \
+    --summary_file experiments/my_exp/round_stats.jsonl \
+    --wandb_project avalon-self-play \
+    --experiment_name my_exp
+```
+
+训练结束后，`self_play.sh` 会自动打印跨轮胜率趋势图：
+
+```
+  R  1  Good  52.0% ██████████           Evil  48.0%  (50 games)
+  R  2  Good  55.0% ███████████          Evil  45.0%  (50 games)
+  ...
+```
+
+### 奖励函数 (`training/reward/avalon_reward.py`)
+
+支持两种模式：
+1. **预计算 advantage**：如果 `ground_truth` 中有 `precomputed_advantage`，直接返回（叠加长度惩罚）
+2. **回退**：使用游戏胜负奖励（阵营获胜 +1.0 / 失败 -1.0，叠加长度惩罚）
+
+**响应长度惩罚：**
+
+防止模型生成过长的回复导致被截断。惩罚公式：
+
+```
+penalty = MAX_PENALTY × ((tokens − START) / (CAP − START)) ^ POWER
+```
+
+默认 POWER=2（二次方），对中等长度宽容，对接近截断严厉。通过 YAML 的 `length_penalty` 段配置。
+
+### 数据预处理 (`training/data/preprocess.py`)
+
+```bash
+python -m training.data.preprocess \
+    --input_jsonl data/trajectories.jsonl \
+    --output_dir data/processed \
+    --advantages_file data/advantages.json \
+    --model_path /path/to/base_model \
+    --train_ratio 0.9
+```
+
+- 支持 tool_calls 和纯文本两种 LLM 输出格式
+- 注入 `precomputed_advantage` 到 ground_truth
+- `--model_path` 启用 tokenizer，计算 `response_token_count` 以支持长度惩罚
+- 输出 `discounted_return` 列用于 Critic 训练
+
 ### Verl 扩展 (`training/verl_extensions/precomputed_adv.py`)
 
 自定义 advantage estimator，注册为 `precomputed`：
@@ -190,26 +336,7 @@ for t in reversed(range(T)):
 - 将 per-sequence advantage 广播到所有 response token
 - 不需要 Verl 内置的 critic 模型
 
-### 数据预处理 (`training/data/preprocess.py`)
-
-新增 `--advantages_file` 参数：
-
-```bash
-python -m training.data.preprocess \
-    --input_jsonl data/trajectories.jsonl \
-    --output_dir data/processed \
-    --advantages_file data/advantages.json
-```
-
-当指定 advantage 文件时：
-- `ground_truth["precomputed_advantage"]` 被注入每个训练样本
-- `discounted_return` 列被加入 parquet（用于 critic 训练）
-
-### 奖励函数 (`training/reward/avalon_reward.py`)
-
-支持两种模式：
-1. **预计算 advantage**：如果 `ground_truth` 中有 `precomputed_advantage`，直接返回
-2. **回退**：使用游戏胜负奖励（阵营获胜 +1.0 / 失败 -1.0）
+---
 
 ## 关键参数
 
@@ -217,12 +344,17 @@ python -m training.data.preprocess \
 |------|--------|------|
 | `GAE_GAMMA` (γ) | 0.99 | 折扣因子，控制未来 reward 的衰减 |
 | `GAE_LAM` (λ) | 0.95 | GAE lambda。λ=1 退化为 Monte Carlo，λ=0 退化为 TD(0) |
-| `CRITIC_LR` | 1e-5 | Critic 学习率（比 actor 的 1e-6 大） |
+| `CRITIC_LR` | 1e-5 | Critic 学习率（比 actor 的 3e-6 大） |
 | `CRITIC_EPOCHS` | 3 | 每轮 self-play 的 critic 训练 epoch 数 |
-| `CRITIC_BATCH_SIZE` | 4 | Critic 训练和推理的 batch size |
-| `TRAIN_EPOCHS` | 20 | 每轮 Verl actor 训练步数 |
-| `GAMES_PER_ROUND` | 100 | 每轮自博弈的游戏数量 |
+| `CRITIC_BATCH_SIZE` | 16 | Critic 训练和推理的 batch size |
+| `TRAIN_EPOCHS` | 4 | 每轮 Verl actor 训练 epoch 数 |
+| `GAMES_PER_ROUND` | 50 | 每轮自博弈的游戏数量 |
 | `ROUNDS` | 5 | 自博弈总轮数 |
+| `LEN_PENALTY_START` | 5000 | 开始施加长度惩罚的 token 数 |
+| `LEN_PENALTY_CAP` | 8192 | 满额惩罚的 token 数 |
+| `LEN_PENALTY_POWER` | 2.0 | 惩罚曲线幂次（1=线性，2=二次方） |
+
+---
 
 ## 冷启动
 
@@ -233,3 +365,33 @@ A_t = (γλ)^(T-t) · R_final
 ```
 
 这本身就是一个合理的起点 —— 越靠近终局的决策获得越大的 advantage 权重。后续轮次随着 Critic 精度提升，credit assignment 会逐步改善，能够识别出关键的中间决策（如投票错误、暴露身份等）。
+
+---
+
+## 实验输出结构
+
+```
+experiments/
+└── my_exp/
+    ├── config.yaml                  # 本次实验的配置快照
+    ├── round_stats.jsonl            # 跨轮胜率汇总（每轮一行 JSON）
+    ├── checkpoints/
+    │   ├── round_1/                 # 第 1 轮合并后的 actor（HuggingFace 格式）
+    │   ├── round_2/
+    │   └── ...
+    ├── critic/
+    │   ├── round_1/                 # 第 1 轮训练后的 Critic
+    │   └── ...
+    ├── data/
+    │   ├── round_1/
+    │   │   ├── trajectories.jsonl   # 游戏轨迹
+    │   │   ├── values.json          # Critic 推理的 V(s)
+    │   │   ├── advantages.json      # GAE 计算的 advantage
+    │   │   └── processed/
+    │   │       ├── train.parquet
+    │   │       └── test.parquet
+    │   └── ...
+    └── logs/
+        ├── vllm_round_1.log
+        └── my_exp-r1.log
+```

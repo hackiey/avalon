@@ -36,7 +36,7 @@ class OpenAIProvider(LLMProvider):
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "extra_body": {"enable_thinking": True}
+            # "extra_body": {"enable_thinking": True}
         }
         
         if tools:
