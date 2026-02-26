@@ -33,7 +33,7 @@ class DecisionDataset(Dataset):
         self,
         decisions: List[Dict[str, Any]],
         tokenizer,
-        max_length: int = 2048,
+        max_length: int = 8192,
     ):
         self.decisions = decisions
         self.tokenizer = tokenizer
@@ -240,7 +240,7 @@ def main():
         help="输出 JSON 文件路径（含 V(s) 值）",
     )
     parser.add_argument("--batch_size", type=int, default=8, help="推理 batch size")
-    parser.add_argument("--max_length", type=int, default=2048, help="最大序列长度")
+    parser.add_argument("--max_length", type=int, default=8192, help="最大序列长度")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument(
         "--device", type=str, default="auto", help="设备 (auto/cuda/cpu)"

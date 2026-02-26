@@ -50,10 +50,10 @@ class OpenAIProvider(LLMProvider):
                 # For other providers, explicitly set tool_choice
                 kwargs["tool_choice"] = "auto"
 
-        print(f"[DEBUG] OpenAI Request: {kwargs}")
+        # print(f"[DEBUG] OpenAI Request: {kwargs}")
         try:
             response = await self.client.chat.completions.create(**kwargs)
-            print(f"[DEBUG] OpenAI Response: {response}")
+            # print(f"[DEBUG] OpenAI Response: {response}")
             
             message = response.choices[0].message
             

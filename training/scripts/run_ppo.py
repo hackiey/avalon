@@ -37,7 +37,7 @@ if _PROJECT_ROOT not in _existing_pythonpath:
 _DEFAULT_CONFIG = os.path.join(_PROJECT_ROOT, "training", "configs", "ppo_avalon.yaml")
 
 
-_VERL_IGNORED_KEYS = {"self_play", "experiment_name"}
+_VERL_IGNORED_KEYS = {"self_play", "experiment_name", "length_penalty"}
 
 
 def _inject_yaml_overrides():
@@ -90,11 +90,11 @@ def _inject_yaml_overrides():
                 overrides.extend(_flatten(v, key))
             elif isinstance(v, list):
                 items = ",".join(str(x) for x in v)
-                overrides.append(f"'{key}=[{items}]'")
+                overrides.append(f"++{key}=[{items}]")
             elif isinstance(v, bool):
-                overrides.append(f"{key}={'true' if v else 'false'}")
+                overrides.append(f"++{key}={'true' if v else 'false'}")
             else:
-                overrides.append(f"{key}={v}")
+                overrides.append(f"++{key}={v}")
         return overrides
 
     yaml_overrides = _flatten(config)

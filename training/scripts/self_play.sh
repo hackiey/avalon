@@ -14,7 +14,7 @@
 #       bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
 # ===========================================================================
 
-set -e
+set -eo pipefail
 
 # ===========================================================================
 # 加载配置
@@ -76,9 +76,15 @@ VLLM_TP=$(cfg self_play.vllm.tp)
 CRITIC_EPOCHS=$(cfg self_play.critic.epochs)
 CRITIC_LR=$(cfg self_play.critic.lr)
 CRITIC_BATCH_SIZE=$(cfg self_play.critic.batch_size)
+CRITIC_GRAD_ACCUM=$(cfg self_play.critic.gradient_accumulation_steps 1)
 
 GAE_GAMMA=$(cfg self_play.gae.gamma)
 GAE_LAM=$(cfg self_play.gae.lam)
+
+LEN_PENALTY_START=$(cfg self_play.length_penalty.start_tokens 5000)
+LEN_PENALTY_CAP=$(cfg self_play.length_penalty.cap_tokens 8192)
+LEN_PENALTY_MAX=$(cfg self_play.length_penalty.max_penalty "-1.0")
+LEN_PENALTY_POWER=$(cfg self_play.length_penalty.power "2.0")
 
 # --- 从 VeRL 配置中读取 step 6/8 需要的值 ---
 TRAIN_EPOCHS=$(cfg trainer.total_epochs)
@@ -175,6 +181,28 @@ stop_vllm() {
     fi
 }
 
+kill_gpu_processes() {
+    log "Killing remaining GPU processes..."
+    local gpu_pids
+    gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sort -u || true)
+    if [ -z "$gpu_pids" ]; then
+        log "No GPU processes found"
+        return 0
+    fi
+    log "Found GPU processes: $(echo $gpu_pids | tr '\n' ' ')"
+    for pid in $gpu_pids; do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+    sleep 5
+    local remaining
+    remaining=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sort -u || true)
+    if [ -n "$remaining" ]; then
+        log "WARNING: Some GPU processes still alive: ${remaining}"
+    else
+        log "All GPU processes cleaned up"
+    fi
+}
+
 merge_checkpoint() {
     local ckpt_dir=$1
     local output_dir=$2
@@ -208,6 +236,7 @@ echo "  Base model:          ${BASE_MODEL}"
 echo "  Train epochs/round:  ${TRAIN_EPOCHS}"
 echo "  Critic epochs/round: ${CRITIC_EPOCHS}"
 echo "  GAE gamma/lambda:    ${GAE_GAMMA} / ${GAE_LAM}"
+echo "  Length penalty:      start=${LEN_PENALTY_START} cap=${LEN_PENALTY_CAP} max=${LEN_PENALTY_MAX}"
 if [ "${RESUME_FROM_ROUND}" -gt 0 ]; then
 echo "  Resume from:         round ${RESUME_FROM_ROUND}, step ${RESUME_FROM_STEP}"
 fi
@@ -244,6 +273,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     ROUND_PARQUET_DIR="${ROUND_DATA_DIR}/processed"
     ROUND_CRITIC_DIR="${CRITIC_DIR}/round_${CURRENT_ROUND}"
     ROUND_EXPERIMENT="${EXPERIMENT_NAME}-r${CURRENT_ROUND}"
+    ROUND_STATS_FILE="${EXPERIMENT_DIR}/round_stats.jsonl"
 
     mkdir -p "${ROUND_DATA_DIR}"
 
@@ -299,6 +329,20 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     fi
 
     # ------------------------------------------------------------------
+    # Step 2.5: 游戏统计（胜率等）
+    # ------------------------------------------------------------------
+    if [ -f "${ROUND_JSONL}" ]; then
+        log "[Step 2.5/8] 计算游戏统计..."
+        python -m training.stats.game_stats \
+            --input_jsonl "${ROUND_JSONL}" \
+            --round "${CURRENT_ROUND}" \
+            --summary_file "${ROUND_STATS_FILE}" \
+            --wandb_project "${PROJECT_NAME}" \
+            --experiment_name "${EXPERIMENT_NAME}" \
+            2>&1 | tee -a "${LOG_DIR}/${ROUND_EXPERIMENT}.log"
+    fi
+
+    # ------------------------------------------------------------------
     # Step 3: Critic 推理 V(s)
     # ------------------------------------------------------------------
     if should_skip_step 3; then
@@ -342,6 +386,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
             --input_jsonl "${ROUND_JSONL}" \
             --output_dir "${ROUND_PARQUET_DIR}" \
             --advantages_file "${ROUND_ADV_JSON}" \
+            --model_path "${CURRENT_MODEL}" \
             --train_ratio 0.9
     fi
 
@@ -355,14 +400,38 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
 
         # run_ppo.py 自动加载 YAML 中的 VeRL 参数
         # 这里只传每轮变化的运行时路径
+        # 注意: PPO 训练可能在 cleanup 阶段 OOM 崩溃（训练本身已完成），
+        # 因此捕获退出码并检查 checkpoint 是否已保存来判断是否可以继续。
+        local ppo_exit_code=0
+        export LEN_PENALTY_START="${LEN_PENALTY_START}"
+        export LEN_PENALTY_CAP="${LEN_PENALTY_CAP}"
+        export LEN_PENALTY_MAX="${LEN_PENALTY_MAX}"
+        export LEN_PENALTY_POWER="${LEN_PENALTY_POWER}"
         PYTHONUNBUFFERED=1 python training/scripts/run_ppo.py \
             --avalon-config "${CONFIG_FILE}" \
             data.train_files="${ROUND_PARQUET_DIR}/train.parquet" \
             data.val_files="${ROUND_PARQUET_DIR}/test.parquet" \
             actor_rollout_ref.model.path="${CURRENT_MODEL}" \
             trainer.experiment_name="${ROUND_EXPERIMENT}" \
-            2>&1 | tee "${LOG_DIR}/${ROUND_EXPERIMENT}.log"
+            2>&1 | tee "${LOG_DIR}/${ROUND_EXPERIMENT}.log" || ppo_exit_code=$?
+
+        if [ "$ppo_exit_code" -ne 0 ]; then
+            log "WARNING: PPO training exited with code ${ppo_exit_code}"
+            # 检查最终 checkpoint 是否已保存
+            local expected_ckpt_prefix="checkpoints/${PROJECT_NAME}/${ROUND_EXPERIMENT}"
+            local latest_ckpt_dir
+            latest_ckpt_dir=$(ls -d "${expected_ckpt_prefix}"/global_step_*/actor 2>/dev/null | sort -t_ -k3 -n | tail -1 || true)
+            if [ -n "$latest_ckpt_dir" ]; then
+                log "Checkpoint found at ${latest_ckpt_dir}, treating as successful (likely cleanup OOM)"
+            else
+                log "ERROR: No checkpoint found under ${expected_ckpt_prefix}/, cannot continue"
+                exit 1
+            fi
+        fi
     fi
+
+    # Step 6 后清理残留 GPU 进程（Ray workers 可能未正常退出）
+    kill_gpu_processes
 
     # ------------------------------------------------------------------
     # Step 7: 训练 Critic
@@ -379,6 +448,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
             --epochs "${CRITIC_EPOCHS}" \
             --lr "${CRITIC_LR}" \
             --batch_size "${CRITIC_BATCH_SIZE}" \
+            --gradient_accumulation_steps "${CRITIC_GRAD_ACCUM}" \
             --bf16
     fi
 
@@ -393,15 +463,18 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 8/8] 合并 actor checkpoint..."
 
-        LATEST_CKPT="checkpoints/${PROJECT_NAME}/${ROUND_EXPERIMENT}/global_step_${TRAIN_EPOCHS}/actor"
+        # 自动查找最新的 global_step checkpoint（VeRL 的 step 编号由实际梯度步数决定）
+        CKPT_PREFIX="checkpoints/${PROJECT_NAME}/${ROUND_EXPERIMENT}"
+        LATEST_CKPT=$(ls -d "${CKPT_PREFIX}"/global_step_*/actor 2>/dev/null | sort -t_ -k3 -n | tail -1 || true)
         MERGED_MODEL="${CHECKPOINT_DIR}/round_${CURRENT_ROUND}"
 
-        if [ -d "${LATEST_CKPT}" ]; then
+        if [ -n "${LATEST_CKPT}" ] && [ -d "${LATEST_CKPT}" ]; then
+            log "Found latest checkpoint: ${LATEST_CKPT}"
             merge_checkpoint "${LATEST_CKPT}" "${MERGED_MODEL}"
             CURRENT_MODEL="${MERGED_MODEL}"
             log "Round ${CURRENT_ROUND} done. New actor model: ${CURRENT_MODEL}"
         else
-            log "WARNING: Checkpoint not found at ${LATEST_CKPT}, reusing previous model"
+            log "WARNING: No checkpoint found under ${CKPT_PREFIX}/, reusing previous model"
         fi
     fi
 
@@ -420,6 +493,29 @@ echo "  Final critic:    ${CURRENT_CRITIC}"
 echo "  Experiment dir:  ${EXPERIMENT_DIR}/"
 echo "============================================================"
 echo ""
+
+# 打印跨轮胜率趋势
+ROUND_STATS_FILE="${EXPERIMENT_DIR}/round_stats.jsonl"
+if [ -f "${ROUND_STATS_FILE}" ]; then
+    echo "  Round Win Rate Trend:"
+    echo "  ─────────────────────────────────────────"
+    python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    for line in f:
+        s = json.loads(line.strip())
+        r = s['round']
+        g = s['good_win_rate'] * 100
+        e = s['evil_win_rate'] * 100
+        n = s['total_games']
+        bar_g = '█' * int(g / 5)
+        print(f'  R{r:>3d}  Good {g:5.1f}% {bar_g:<20s}  Evil {e:5.1f}%  ({n} games)')
+" "${ROUND_STATS_FILE}"
+    echo "  ─────────────────────────────────────────"
+    echo "  Full stats: ${ROUND_STATS_FILE}"
+fi
+echo ""
+
 echo "评估最终模型:"
 echo "  python -m training.eval.evaluate \\"
 echo "      --model_path ${CURRENT_MODEL} \\"

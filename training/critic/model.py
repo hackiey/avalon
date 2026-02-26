@@ -29,13 +29,13 @@ class CriticModel(nn.Module):
         model_name_or_path: str,
         torch_dtype: Optional[torch.dtype] = None,
         device_map: Optional[str] = None,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.model_name_or_path = model_name_or_path
 
         config = AutoConfig.from_pretrained(model_name_or_path)
         config.num_labels = 1
-        # 确保 pad_token_id 设置正确
         if config.pad_token_id is None:
             config.pad_token_id = config.eos_token_id
 
@@ -51,8 +51,11 @@ class CriticModel(nn.Module):
             **kwargs,
         )
 
-        # 如果从 base LLM 初始化，score head 是随机的，需要小值初始化
-        # (AutoModelForSequenceClassification 自动添加了 score/classifier head)
+        if gradient_checkpointing:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+
         self._init_value_head()
 
     def _init_value_head(self):
@@ -101,6 +104,7 @@ class CriticModel(nn.Module):
         model_path: str,
         torch_dtype: Optional[torch.dtype] = None,
         device_map: Optional[str] = None,
+        gradient_checkpointing: bool = False,
     ) -> "CriticModel":
         """从已训练的 checkpoint 加载。"""
         instance = cls.__new__(cls)
@@ -108,7 +112,6 @@ class CriticModel(nn.Module):
         instance.model_name_or_path = model_path
 
         config = AutoConfig.from_pretrained(model_path)
-        # 确保与 __init__ 逻辑一致
         config.num_labels = 1
         if config.pad_token_id is None:
             config.pad_token_id = config.eos_token_id
@@ -124,6 +127,12 @@ class CriticModel(nn.Module):
             config=config,
             **kwargs,
         )
+
+        if gradient_checkpointing:
+            instance.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+
         return instance
 
 

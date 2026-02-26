@@ -48,6 +48,30 @@ import pandas as pd
 from game.roles import is_evil_role
 
 
+def _count_response_tokens(response_json: str, tokenizer) -> int:
+    """计算 response 的 token 数（与 VeRL 截断逻辑对齐）。
+
+    从 response JSON 中提取实际文本内容并 tokenize，
+    不含 JSON 语法开销，更接近 apply_chat_template 的真实 token 数。
+    """
+    try:
+        msg = json.loads(response_json)
+    except (json.JSONDecodeError, TypeError):
+        return len(tokenizer.encode(response_json, add_special_tokens=False))
+
+    parts = []
+    if msg.get("reasoning_content"):
+        parts.append(msg["reasoning_content"])
+    if msg.get("content"):
+        parts.append(msg["content"])
+    if msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            parts.append(json.dumps(tc, ensure_ascii=False))
+
+    text = "\n".join(parts) if parts else response_json
+    return len(tokenizer.encode(text, add_special_tokens=False))
+
+
 def load_trajectories(input_jsonl: str) -> List[Dict[str, Any]]:
     """加载 JSONL 轨迹文件。"""
     trajectories = []
@@ -194,6 +218,7 @@ def extract_response(decision: Dict[str, Any]) -> str:
 def build_samples(
     trajectories: List[Dict[str, Any]],
     advantage_lookup: Optional[Dict[tuple, Dict[str, float]]] = None,
+    tokenizer=None,
 ) -> List[Dict[str, Any]]:
     """将轨迹转换为 Verl 训练样本。
 
@@ -239,6 +264,12 @@ def build_samples(
                 "action_type": decision.get("action_type", ""),
                 "seq_num": seq_num,
             }
+
+            # 存储原始 response 的 token 数（VeRL 截断前的真实长度，用于长度惩罚）
+            if tokenizer is not None:
+                gt["response_token_count"] = _count_response_tokens(
+                    response, tokenizer
+                )
 
             # 注入预计算的 advantage（如果有）
             discounted_return = 0.0
@@ -317,6 +348,12 @@ def main():
         help="训练集比例 (默认 0.9)",
     )
     parser.add_argument(
+        "--model_path",
+        type=str,
+        default=None,
+        help="模型路径（用于 tokenizer 计算 response token 数，启用长度惩罚时必需）",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -324,6 +361,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # 加载 tokenizer（用于计算 response token 数）
+    tokenizer = None
+    if args.model_path:
+        from transformers import AutoTokenizer
+        print(f"Loading tokenizer from {args.model_path}...")
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model_path, trust_remote_code=True
+        )
+        print(f"  Tokenizer loaded: {type(tokenizer).__name__}")
 
     # 加载轨迹
     print(f"Loading trajectories from {args.input_jsonl}...")
@@ -339,7 +386,7 @@ def main():
 
     # 构建训练样本
     print("Building training samples...")
-    samples = build_samples(trajectories, advantage_lookup)
+    samples = build_samples(trajectories, advantage_lookup, tokenizer=tokenizer)
     print(f"  Created {len(samples)} training samples")
 
     if not samples:
@@ -416,7 +463,31 @@ def main():
         print(f"  ground_truth keys: {list(gt.keys())}")
         if "precomputed_advantage" in gt:
             print(f"  precomputed_advantage: {gt['precomputed_advantage']:.4f}")
+        if "response_token_count" in gt:
+            print(f"  response_token_count: {gt['response_token_count']}")
         print(f"  discounted_return: {sample['discounted_return']:.4f}")
+
+    # 打印 response token 分布（用于校准长度惩罚阈值）
+    if tokenizer and samples:
+        token_counts = []
+        for s in samples:
+            gt_data = json.loads(s["reward_model"]["ground_truth"])
+            if "response_token_count" in gt_data:
+                token_counts.append(gt_data["response_token_count"])
+        if token_counts:
+            token_counts.sort()
+            n = len(token_counts)
+            print(f"\nResponse token distribution ({n} samples):")
+            print(f"  min:  {token_counts[0]}")
+            print(f"  p25:  {token_counts[n // 4]}")
+            print(f"  p50:  {token_counts[n // 2]}")
+            print(f"  p75:  {token_counts[3 * n // 4]}")
+            print(f"  p90:  {token_counts[int(n * 0.9)]}")
+            print(f"  p95:  {token_counts[int(n * 0.95)]}")
+            print(f"  p99:  {token_counts[int(n * 0.99)]}")
+            print(f"  max:  {token_counts[-1]}")
+            over_8k = sum(1 for t in token_counts if t > 8192)
+            print(f"  >8192: {over_8k} ({over_8k / n * 100:.1f}%)")
 
     # 打印列信息
     print(f"\nParquet columns: {list(train_df.columns)}")

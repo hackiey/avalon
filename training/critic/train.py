@@ -40,7 +40,7 @@ class CriticDataset(Dataset):
     - discounted_return: G_t 值 (float)
     """
 
-    def __init__(self, data_file: str, tokenizer, max_length: int = 2048):
+    def __init__(self, data_file: str, tokenizer, max_length: int = 8192):
         df = pd.read_parquet(data_file)
         self.prompts = df["prompt"].tolist()
         self.returns = df["discounted_return"].tolist()
@@ -121,6 +121,7 @@ def train(args):
         model_name_or_path=args.model_path,
         torch_dtype=torch_dtype,
         device_map="auto" if args.device == "auto" else None,
+        gradient_checkpointing=args.gradient_checkpointing,
     )
 
     if args.device != "auto":
@@ -129,34 +130,41 @@ def train(args):
     else:
         device = next(model.parameters()).device
 
-    # 加载数据
     print(f"Loading data from {args.data_file}...")
     dataset = CriticDataset(args.data_file, tokenizer, max_length=args.max_length)
     print(f"Dataset size: {len(dataset)}")
 
+    grad_accum_steps = args.gradient_accumulation_steps
+    micro_batch_size = args.batch_size
+
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=micro_batch_size,
         shuffle=True,
         collate_fn=lambda batch: collate_fn(batch, tokenizer.pad_token_id),
         num_workers=args.num_workers,
         pin_memory=True,
     )
 
-    # 优化器和调度器
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    total_steps = len(dataloader) * args.epochs
-    warmup_steps = int(total_steps * args.warmup_ratio)
+    total_optimizer_steps = (len(dataloader) // grad_accum_steps) * args.epochs
+    warmup_steps = int(total_optimizer_steps * args.warmup_ratio)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
+        num_training_steps=total_optimizer_steps,
     )
 
     loss_fn = torch.nn.MSELoss()
 
-    # 训练循环
-    print(f"\nStarting training: {args.epochs} epochs, {total_steps} total steps")
+    effective_batch = micro_batch_size * grad_accum_steps
+    print(f"\nStarting training: {args.epochs} epochs, "
+          f"micro_batch={micro_batch_size}, grad_accum={grad_accum_steps}, "
+          f"effective_batch={effective_batch}, "
+          f"{total_optimizer_steps} optimizer steps")
+    if args.gradient_checkpointing:
+        print("Gradient checkpointing: enabled")
+
     model.train()
     global_step = 0
 
@@ -168,33 +176,33 @@ def train(args):
             dataloader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=True
         )
 
-        for batch in progress_bar:
+        optimizer.zero_grad()
+
+        for batch_idx, batch in enumerate(progress_bar):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             target_values = batch["target_values"].to(device)
 
-            # 前向
-            predicted_values = model(input_ids, attention_mask)
+            predicted_values = model(input_ids, attention_mask).float()
             loss = loss_fn(predicted_values, target_values)
-
-            # 反向
-            optimizer.zero_grad()
+            loss = loss / grad_accum_steps
             loss.backward()
 
-            if args.max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.max_grad_norm
-                )
-
-            optimizer.step()
-            scheduler.step()
-
-            epoch_loss += loss.item()
+            epoch_loss += loss.item() * grad_accum_steps
             num_batches += 1
-            global_step += 1
+
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+                if args.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), args.max_grad_norm
+                    )
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
 
             progress_bar.set_postfix(
-                loss=f"{loss.item():.4f}",
+                loss=f"{loss.item() * grad_accum_steps:.4f}",
                 lr=f"{scheduler.get_last_lr()[0]:.2e}",
             )
 
@@ -236,12 +244,20 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=0.01, help="权重衰减")
     parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup 比例")
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="梯度裁剪")
-    parser.add_argument("--max_length", type=int, default=2048, help="最大序列长度")
+    parser.add_argument("--max_length", type=int, default=8192, help="最大序列长度")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument(
         "--device", type=str, default="auto", help="设备 (auto/cuda/cpu)"
     )
     parser.add_argument("--bf16", action="store_true", help="使用 bfloat16")
+    parser.add_argument(
+        "--gradient_checkpointing", action="store_true",
+        help="启用 gradient checkpointing 降低显存占用",
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps", type=int, default=1,
+        help="梯度累积步数（effective_batch = batch_size × 此值）",
+    )
 
     args = parser.parse_args()
     train(args)

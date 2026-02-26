@@ -42,6 +42,16 @@ self_play:
     gamma: 0.99
     lam: 0.95
 
+  # 响应长度惩罚 (抑制冗长回复导致截断)
+  # 惩罚公式: max_penalty * ((tokens - start) / (cap - start)) ^ power
+  # power=1 线性, power=2 二次方(默认, 对中等长度宽容/接近截断严厉)
+  # 需要在 preprocess 时传 --model_path 以计算准确 token 数
+  length_penalty:
+    start_tokens: 5000      # 开始惩罚的 token 数
+    cap_tokens: 8192        # 满额惩罚的 token 数 (= max_response_length)
+    max_penalty: -1.0       # 最大惩罚值 (负值 = 惩罚)
+    power: 2.0              # 惩罚曲线幂次 (1=线性, 2=二次方, 3=三次方)
+
 # ===== VeRL PPO 训练配置 =====
 data:
   train_batch_size: 128
@@ -89,5 +99,5 @@ trainer:
   nnodes: 1
   save_freq: 20
   test_freq: 10
-  total_epochs: 20
+  total_epochs: 4
   val_before_train: false

@@ -1,6 +1,8 @@
 experiments/
 checkpoints/
 /data/
+training/configs/*.yaml
+!training/configs/ppo_avalon.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
