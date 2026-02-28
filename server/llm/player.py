@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass, field
 import asyncio
 
-from server.llm.base import LLMProvider, Message
+from server.llm.base import LLMProvider, Message, ToolCallParseError
 from server.llm.providers import create_provider
 from game.prompts import build_system_prompt, build_user_prompt
 from server.llm.tools import game_tools
@@ -136,8 +136,6 @@ class LLMPlayer:
         
         try:
             result = await self.provider.generate(messages, temperature=0.8, tools=tools)
-
-            # print(f"[DEBUG] Discuss as leader result: {result}")
             
             # Build llm_output from raw result
             llm_output = self._build_llm_output(result)
@@ -150,6 +148,9 @@ class LLMPlayer:
                 content = f"作为队长，我需要选择{team_size}名队员执行任务。让我听听大家的意见。"
             
             return LLMCallResult(result=content, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in discuss_as_leader: {e}")
             return LLMCallResult(
@@ -204,6 +205,9 @@ class LLMPlayer:
                 speech = f"综合大家的意见，我最终决定选择 [{team_display}] 执行任务。"
             
             return team, speech, llm_input, llm_output
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in select_team_final: {e}")
             # Fallback
@@ -255,6 +259,9 @@ class LLMPlayer:
                 speech = f"我选择了 [{team_display}] 来执行这次任务。"
             
             return team, speech, llm_input, llm_output
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in select_team: {e}")
             # Fallback
@@ -287,6 +294,9 @@ class LLMPlayer:
                 content = "我需要更多信息来做出判断。"
             
             return LLMCallResult(result=content, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in discuss: {e}")
             return LLMCallResult(
@@ -315,6 +325,9 @@ class LLMPlayer:
             approve = args.get("approve", True)
             
             return LLMCallResult(result=approve, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in vote: {e}")
             return LLMCallResult(
@@ -343,6 +356,9 @@ class LLMPlayer:
             success = args.get("success", True)
             
             return LLMCallResult(result=success, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in execute_quest: {e}")
             # Good players always succeed
@@ -376,6 +392,9 @@ class LLMPlayer:
                 content = "我需要仔细回顾一下大家的表现再做判断。"
             
             return LLMCallResult(result=content, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in discuss_assassination: {e}")
             return LLMCallResult(
@@ -414,6 +433,9 @@ class LLMPlayer:
                 target = random.choice(valid_targets)
             
             return LLMCallResult(result=target, llm_input=llm_input, llm_output=llm_output)
+        except ToolCallParseError as e:
+            e.llm_input = llm_input
+            raise
         except Exception as e:
             print(f"Error in assassinate: {e}")
             # Random target from good players

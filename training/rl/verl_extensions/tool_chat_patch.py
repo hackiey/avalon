@@ -16,7 +16,7 @@
      传递 tools 信息
 
 用法 (在 run_ppo.py 中):
-    from training.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
+    from training.rl.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
     patch_rlhf_dataset_for_tools()
 """
 

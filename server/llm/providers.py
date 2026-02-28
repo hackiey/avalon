@@ -9,7 +9,7 @@ import httpx
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 
-from server.llm.base import LLMProvider, Message
+from server.llm.base import LLMProvider, Message, ToolCallParseError
 from server.config import settings, LLMProviderConfig
 
 
@@ -63,7 +63,11 @@ class OpenAIProvider(LLMProvider):
             # 2. Extract content
             content = message.content or ""
             
-            # 3. Handle tool calls
+            # 3. Detect malformed tool calls (vLLM Hermes parser failure)
+            if tools and not message.tool_calls and content and "<tool_call>" in content:
+                raise ToolCallParseError(raw_content=content)
+
+            # 4. Handle tool calls
             if message.tool_calls:
                 # If tool calls are present, return a dictionary containing all info
                 # We need to support multiple tool calls (e.g. action + update_memory)

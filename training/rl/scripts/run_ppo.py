@@ -10,13 +10,13 @@
 
 用法:
     # 自动加载 ppo_avalon.yaml + 命令行覆盖动态值
-    python training/scripts/run_ppo.py \\
+    python training/rl/scripts/run_ppo.py \\
         data.train_files=... \\
         actor_rollout_ref.model.path=... \\
         trainer.experiment_name=...
 
     # 也可用 --avalon-config 指定其他 yaml
-    python training/scripts/run_ppo.py \\
+    python training/rl/scripts/run_ppo.py \\
         --avalon-config path/to/custom.yaml \\
         data.train_files=...
 """
@@ -25,7 +25,7 @@ import os
 import sys
 
 # 确保项目根目录在 sys.path 中，使 `import training.xxx` 可用
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
@@ -34,7 +34,7 @@ if _PROJECT_ROOT not in _existing_pythonpath:
     os.environ["PYTHONPATH"] = _PROJECT_ROOT + (":" + _existing_pythonpath if _existing_pythonpath else "")
 
 # === 加载 Avalon YAML 配置，注入为 Hydra CLI 覆盖 ===
-_DEFAULT_CONFIG = os.path.join(_PROJECT_ROOT, "training", "configs", "ppo_avalon.yaml")
+_DEFAULT_CONFIG = os.path.join(_PROJECT_ROOT, "training", "rl", "configs", "ppo_avalon.yaml")
 
 
 _VERL_IGNORED_KEYS = {"self_play", "experiment_name", "length_penalty"}
@@ -105,9 +105,9 @@ def _inject_yaml_overrides():
 _inject_yaml_overrides()
 
 # 在 driver 进程中注册（对 Ray local_mode 或非 Ray 场景有用）
-import training.verl_extensions.precomputed_adv  # noqa: F401 — registers "precomputed"
+import training.rl.verl_extensions.precomputed_adv  # noqa: F401 — registers "precomputed"
 
-from training.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
+from training.rl.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
 patch_rlhf_dataset_for_tools()  # Patch RLHFDataset 支持 tool-calling prompts
 
 # === 核心修复: 扩展 TaskRunner，确保在 Ray actor 进程中也注册自定义扩展 ===
@@ -133,8 +133,8 @@ class _AvalonTaskRunner(_OriginalTaskRunner):
         if self._project_root not in sys.path:
             sys.path.insert(0, self._project_root)
 
-        import training.verl_extensions.precomputed_adv  # noqa: F401 — 注册 "precomputed" estimator
-        from training.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
+        import training.rl.verl_extensions.precomputed_adv  # noqa: F401 — 注册 "precomputed" estimator
+        from training.rl.verl_extensions.tool_chat_patch import patch_rlhf_dataset_for_tools
         patch_rlhf_dataset_for_tools()
 
         return super().run(config)

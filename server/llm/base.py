@@ -12,6 +12,19 @@ class Message:
     content: str
 
 
+class ToolCallParseError(Exception):
+    """vLLM/serving layer failed to parse the model's tool call output.
+
+    Typically caused by repeated/malformed JSON in <tool_call> blocks.
+    Carries raw content and llm_input for error logging and training data.
+    """
+
+    def __init__(self, raw_content: str):
+        self.raw_content = raw_content
+        self.llm_input: Dict[str, Any] = {}
+        super().__init__(f"Malformed tool call: {raw_content[:200]}")
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
     

@@ -7,7 +7,7 @@
 输出: JSON 文件，每个决策附带 V(s) 值
 
 用法:
-    python -m training.critic.infer \
+    python -m training.rl.critic.infer \
         --model_path training/self_play/critic \
         --input_jsonl data/trajectories.jsonl \
         --output_json data/values.json \
@@ -23,7 +23,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from training.critic.model import CriticModel, load_tokenizer
+from training.rl.critic.model import CriticModel, load_tokenizer
 
 
 class DecisionDataset(Dataset):

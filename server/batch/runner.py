@@ -8,11 +8,14 @@ to the database for later export and RL training.
 import asyncio
 import uuid
 from datetime import datetime
-from typing import List, Optional, Callable, Tuple
+from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
+
+from tqdm import tqdm
 
 from game.rollout import GameRollout
 from game.roles import is_evil
+from server.llm.base import ToolCallParseError
 
 
 @dataclass
@@ -40,6 +43,11 @@ class BatchConfig:
 
     # Skip MongoDB, store everything in memory (for servers without MongoDB)
     no_mongo: bool = False
+
+    # Role-based model assignment: {role_value: (model_name, provider)}
+    # When set, overrides model assignment after role allocation.
+    # Roles not in the map use the first entry in `models` as default.
+    role_model_map: Optional[Dict[str, Tuple[str, str]]] = None
 
 
 @dataclass
@@ -108,17 +116,20 @@ class BatchGameRunner:
         # Use semaphore to limit concurrency
         semaphore = asyncio.Semaphore(self.config.parallel)
 
+        pbar = tqdm(total=self.config.num_games, desc="Rollout", unit="game", dynamic_ncols=True)
+
         async def run_with_semaphore(game_index: int):
             async with semaphore:
                 if self._stop_requested:
                     return
-                await self._run_game_and_record(game_index, batch_id)
+                await self._run_game_and_record(game_index, batch_id, pbar)
 
         # Create all tasks
         tasks = [run_with_semaphore(i) for i in range(self.config.num_games)]
 
         # Run all tasks concurrently (semaphore limits actual parallelism)
         await asyncio.gather(*tasks, return_exceptions=True)
+        pbar.close()
 
         result.finished_at = datetime.now().isoformat()
 
@@ -133,7 +144,7 @@ class BatchGameRunner:
 
         return result
 
-    async def _run_game_and_record(self, game_index: int, batch_id: str):
+    async def _run_game_and_record(self, game_index: int, batch_id: str, pbar: tqdm = None):
         """Run a single game and record the result."""
         try:
             game_id, winner = await self._run_single_game(game_index, batch_id)
@@ -149,12 +160,18 @@ class BatchGameRunner:
                 self._result.game_ids.append(game_id)
                 self._completed_count += 1
                 completed = self._completed_count
+                good_wins = self._result.good_wins
+                evil_wins = self._result.evil_wins
 
-            # Progress update
             if self.config.progress_callback:
                 self.config.progress_callback(completed, self.config.num_games, game_id)
-            else:
-                print(f"Game {completed}/{self.config.num_games} completed: {game_id} (Winner: {winner})")
+            elif pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(
+                    good=f"{good_wins}({good_wins/completed*100:.0f}%)" if completed else "0",
+                    evil=f"{evil_wins}({evil_wins/completed*100:.0f}%)" if completed else "0",
+                    last=winner or "?",
+                )
 
         except Exception as e:
             async with self._result_lock:
@@ -162,7 +179,11 @@ class BatchGameRunner:
                 self._completed_count += 1
                 error_msg = f"Game {game_index+1} failed: {str(e)}"
                 self._result.errors.append(error_msg)
-            print(f"ERROR: {error_msg}")
+            if pbar is not None:
+                pbar.update(1)
+                pbar.write(f"ERROR: {error_msg}")
+            else:
+                print(f"ERROR: {error_msg}")
             import traceback
             traceback.print_exc()
 
@@ -192,6 +213,17 @@ class BatchGameRunner:
 
         rollout = GameRollout(player_count=self.config.player_count)
         first_seat, first_phase = rollout.create_and_start(rollout_player_configs)
+
+        # 2.5 Role-based model override (for controlled A/B evaluation)
+        if self.config.role_model_map:
+            default_model, default_provider = self.config.models[0]
+            for player in rollout.state.players:
+                role_key = player.role.value if player.role else None
+                if role_key and role_key in self.config.role_model_map:
+                    player.model_name, player.provider = self.config.role_model_map[role_key]
+                else:
+                    player.model_name = default_model
+                    player.provider = default_provider
 
         # 3. Create LLM player manager
         llm_manager = LLMPlayerManager()
@@ -226,14 +258,23 @@ class BatchGameRunner:
 
         # 5. Game loop
         seat, phase = first_seat, first_phase
+        error_terminated = False
 
         while not rollout.is_finished:
             llm_player = llm_manager.get_player(seat)
             if not llm_player:
                 break
 
-            # Call LLM and execute action based on phase
-            await self._handle_turn(rollout, llm_player, seat, phase, game_id)
+            try:
+                await self._handle_turn(rollout, llm_player, seat, phase, game_id)
+            except ToolCallParseError as e:
+                print(
+                    f"[WARN] Game {game_id}: Malformed tool call at "
+                    f"round {rollout.state.current_round}, seat {seat}, "
+                    f"phase {phase}. Stopping game."
+                )
+                error_terminated = True
+                break
 
             if rollout.is_finished:
                 break
@@ -248,6 +289,8 @@ class BatchGameRunner:
         await self._repo.update_game_state(rollout.state)
 
         winner = rollout.winner.value if rollout.winner else None
+        if error_terminated:
+            winner = "error"
         return game_id, winner
 
     async def _handle_turn(
@@ -258,7 +301,38 @@ class BatchGameRunner:
         phase: str,
         game_id: str,
     ):
-        """Handle a single turn: call LLM, execute action, save to DB."""
+        """Handle a single turn: call LLM, execute action, save to DB.
+
+        Raises ToolCallParseError if model generates malformed tool calls,
+        after saving the failed action to the database.
+        """
+        state = rollout.state
+
+        try:
+            await self._handle_turn_inner(rollout, llm_player, seat, phase, game_id)
+        except ToolCallParseError as e:
+            await self._repo.save_action(
+                game_id=game_id,
+                round_num=state.current_round,
+                action_type=phase,
+                player_seat=seat,
+                llm_input=e.llm_input,
+                llm_output={
+                    "error": "tool_call_parse_error",
+                    "raw_content": e.raw_content,
+                },
+            )
+            raise
+
+    async def _handle_turn_inner(
+        self,
+        rollout: GameRollout,
+        llm_player,
+        seat: int,
+        phase: str,
+        game_id: str,
+    ):
+        """Inner turn handler (separated for ToolCallParseError wrapping)."""
         state = rollout.state
 
         if phase in ("leader_discussion", "discussion"):

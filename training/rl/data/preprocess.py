@@ -265,6 +265,10 @@ def build_samples(
                 "seq_num": seq_num,
             }
 
+            llm_output = decision.get("llm_output", {})
+            if llm_output.get("error") == "tool_call_parse_error":
+                gt["format_error"] = True
+
             # 存储原始 response 的 token 数（VeRL 截断前的真实长度，用于长度惩罚）
             if tokenizer is not None:
                 gt["response_token_count"] = _count_response_tokens(

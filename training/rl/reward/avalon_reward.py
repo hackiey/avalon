@@ -23,18 +23,51 @@
 
   ground_truth 中需有 response_token_count 字段（由 preprocess --model_path 注入）。
 
+复读机惩罚:
+  检测模型生成文本中连续重复的字符序列，触发负分惩罚。
+  使用正则回溯引用匹配任意 2–200 字符的子串连续出现 >= REPEAT_THRESHOLD 次。
+  语言无关: 中文（好的好的好的好的）、英文（yes yes yes yes）、
+  JSON/tool-call 重复块均可检测。
+
+  通过环境变量配置:
+    REPEAT_PENALTY     惩罚分值     (默认 -2.0, 负值 = 惩罚)
+    REPEAT_THRESHOLD   触发阈值     (默认 4, 连续重复次数)
+
+格式错误惩罚（仅离线检测）:
+  当 rollout 中 vLLM Hermes parser 解析 tool call 失败时，runner 将错误
+  action 保存到 DB，preprocess 阶段检测到后在 ground_truth 中注入
+  format_error 标记。reward 函数据此惩罚。
+
+  注意: 不检测 solution_str 中的 <tool_call>，因为 verl 训练 rollout 中
+  模型的正确 Hermes 格式 tool call 输出也包含该标签，检测会误伤。
+
+  通过环境变量配置:
+    FORMAT_PENALTY     惩罚分值     (默认 -2.0, 负值 = 惩罚)
+
 Verl 接口:
     compute_score(data_source, solution_str, ground_truth, extra_info=None) -> float
 """
 
 import json
 import os
+import re
 from typing import Any
 
 _LEN_PENALTY_START = int(os.environ.get("LEN_PENALTY_START", "5000"))
 _LEN_PENALTY_CAP = int(os.environ.get("LEN_PENALTY_CAP", "8192"))
 _LEN_PENALTY_MAX = float(os.environ.get("LEN_PENALTY_MAX", "-1.0"))
 _LEN_PENALTY_POWER = float(os.environ.get("LEN_PENALTY_POWER", "2.0"))
+
+_REPEAT_PENALTY = float(os.environ.get("REPEAT_PENALTY", "-2.0"))
+_REPEAT_THRESHOLD = int(os.environ.get("REPEAT_THRESHOLD", "4"))
+
+# Regex: any 2–200 char substring repeated >= REPEAT_THRESHOLD times consecutively.
+# Non-greedy so shorter patterns match first (catches "好的好的好的好的" as "好的"×4).
+_REPEAT_RE = re.compile(
+    r"(.{2,200}?)\1{" + str(max(_REPEAT_THRESHOLD - 1, 1)) + r",}"
+)
+
+_FORMAT_PENALTY = float(os.environ.get("FORMAT_PENALTY", "-2.0"))
 
 
 def _response_length_penalty(gt: dict) -> float:
@@ -56,6 +89,41 @@ def _response_length_penalty(gt: dict) -> float:
 
     ratio = (token_count - _LEN_PENALTY_START) / (_LEN_PENALTY_CAP - _LEN_PENALTY_START)
     return _LEN_PENALTY_MAX * (ratio ** _LEN_PENALTY_POWER)
+
+
+def _format_penalty(gt: dict) -> float:
+    """Penalty for malformed tool calls (offline detection only).
+
+    Triggered when ground_truth has format_error flag, which is set by
+    preprocess.py when llm_output contains tool_call_parse_error.
+
+    NOTE: We intentionally do NOT check solution_str for <tool_call> markers,
+    because during verl PPO training the model's correct Hermes-format tool
+    calls also contain <tool_call> tags in the decoded text. Checking for
+    them would penalize all valid tool call outputs.
+    """
+    if _FORMAT_PENALTY >= 0:
+        return 0.0
+    if gt.get("format_error"):
+        return _FORMAT_PENALTY
+    return 0.0
+
+
+def _repetition_penalty(text: str) -> float:
+    """Detect consecutive repeated character sequences and return penalty.
+
+    Uses regex backreference to find any substring (2–200 chars) that
+    appears >= REPEAT_THRESHOLD times consecutively.  Language-agnostic:
+    works for Chinese (好的好的好的好的), English (yes yes yes yes),
+    mixed text, and repeated JSON/tool-call blocks.
+    """
+    if not text or _REPEAT_PENALTY >= 0:
+        return 0.0
+
+    if _REPEAT_RE.search(text):
+        return _REPEAT_PENALTY
+
+    return 0.0
 
 
 def compute_score(
@@ -86,15 +154,17 @@ def compute_score(
         return 0.0
 
     length_penalty = _response_length_penalty(gt)
+    repeat_penalty = _repetition_penalty(solution_str)
+    format_pen = _format_penalty(gt)
 
     if "precomputed_advantage" in gt:
-        return gt["precomputed_advantage"] + length_penalty
+        return gt["precomputed_advantage"] + length_penalty + repeat_penalty + format_pen
 
     player_team = gt.get("player_team", "")
     game_winner = gt.get("game_winner", "")
 
     if not player_team or not game_winner:
-        return 0.0
+        return 0.0 + repeat_penalty + format_pen
 
     base_reward = 1.0 if player_team == game_winner else -1.0
-    return base_reward + length_penalty
+    return base_reward + length_penalty + repeat_penalty + format_pen

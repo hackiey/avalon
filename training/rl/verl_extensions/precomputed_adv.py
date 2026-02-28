@@ -7,7 +7,7 @@ reward function 已经通过 ground_truth["precomputed_advantage"] 返回了
 
 注册方式:
     在训练脚本启动前 import 本模块即可:
-    import training.verl_extensions.precomputed_adv
+    import training.rl.verl_extensions.precomputed_adv
 
 Verl 配置:
     algorithm.adv_estimator=precomputed

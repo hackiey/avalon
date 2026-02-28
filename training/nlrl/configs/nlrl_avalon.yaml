@@ -1,0 +1,67 @@
+# ===========================================================================
+# NLRL (Natural Language Reinforcement Learning) 实验配置
+# ===========================================================================
+# 用法:
+#   bash training/nlrl/pipeline.sh training/nlrl/configs/nlrl_avalon.yaml
+#
+# 断点续训:
+#   RESUME_FROM_ROUND=2 \
+#       bash training/nlrl/pipeline.sh training/nlrl/configs/nlrl_avalon.yaml
+#
+# 完成后继续 RL 训练:
+#   bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
+#   （将 base_model 指向 NLRL 的最终 checkpoint）
+# ===========================================================================
+#
+# NLRL 训练思路:
+#   1. 用当前模型跑游戏，收集轨迹
+#   2. Teacher LLM（强模型）标注每个决策的好坏及原因
+#   3. Teacher LLM 更新各角色的自然语言策略文档
+#   4. Teacher LLM 按更新后的策略重新生成所有决策（SFT 数据）
+#   5. SFT 微调目标模型
+#   重复 N 轮，最终产出可直接用于 RL 训练的 warm-up 模型
+# ===========================================================================
+
+experiment_name: "nlrl_v1"
+
+nlrl:
+  base_model: /mnt/iem-nas/home/share/llm_share/models/Qwen3-14B
+  rounds: 3
+  games_per_round: 50
+  player_count: 5
+  parallel: 10
+
+  # 自博弈阶段的 vLLM 推理服务
+  vllm:
+    port: 8000
+    gpu_util: 0.85
+    tp: 8
+
+  # Teacher LLM（用于标注和策略更新）
+  # 复用 .env 中的 API key（OPENAI_API_KEY / OPENAI_BASE_URL 等）
+  # 注意: 建议使用支持 tool_calling 的模型（synthesis 步骤需要）
+  teacher:
+    provider: openai          # openai / anthropic / deepseek / vllm
+    model: gpt-4o
+    concurrency: 10           # 并发请求数（控制 API 速率）
+    annotate_max_per_role: 80 # 每轮每角色最多标注的决策数（控制成本）
+    temperature_annotate: 0.3 # 标注用低温度（追求准确性）
+    temperature_synthesize: 0.7 # 生成用正常温度
+
+  # SFT 数据合成
+  synthesize:
+    concurrency: 10           # 并发合成请求数
+    train_ratio: 0.9          # 训练集比例
+
+  # SFT 微调
+  sft:
+    epochs: 2
+    lr: 2e-5
+    batch_size: 2
+    gradient_accumulation_steps: 8
+    max_seq_length: 16384
+    bf16: true
+    # response_template 用于 loss masking，与模型的 chat template 对应
+    # Qwen2.5/Qwen3: "<|im_start|>assistant\n"
+    # LLaMA3: "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    response_template: "<|im_start|>assistant\n"

@@ -6,28 +6,37 @@
 
 ```
 training/
-├── data/
-│   └── preprocess.py              # JSONL 轨迹 -> Verl parquet 格式转换
-├── reward/
-│   └── avalon_reward.py           # Avalon 奖励函数（GAE advantage / 游戏胜负 / 长度惩罚）
-├── critic/
-│   ├── model.py                   # Critic 模型定义 (base LLM + value head)
-│   ├── train.py                   # Critic 训练 (MSE loss)
-│   └── infer.py                   # Critic 推理 V(s)
-├── advantage/
-│   └── compute.py                 # Episode 级 GAE 计算
-├── stats/
-│   └── game_stats.py              # 每轮游戏统计（胜率、角色胜率、wandb 上报）
-├── verl_extensions/
-│   ├── precomputed_adv.py         # 自定义 Verl advantage estimator
-│   └── tool_chat_patch.py         # Tool-calling prompt 兼容补丁
-├── configs/
-│   └── ppo_avalon.yaml            # 训练配置模板（一个 YAML = 一个完整实验）
-├── scripts/
-│   ├── self_play.sh               # 自博弈循环（9 步流程，接受 YAML 配置）
-│   └── run_ppo.py                 # VeRL PPO 训练 wrapper（加载 YAML 配置）
+├── rl/                            # RL 训练模块
+│   ├── data/
+│   │   └── preprocess.py          # JSONL 轨迹 -> Verl parquet 格式转换
+│   ├── reward/
+│   │   └── avalon_reward.py       # Avalon 奖励函数（GAE advantage / 游戏胜负 / 长度惩罚）
+│   ├── critic/
+│   │   ├── model.py               # Critic 模型定义 (base LLM + value head)
+│   │   ├── train.py               # Critic 训练 (MSE loss)
+│   │   └── infer.py               # Critic 推理 V(s)
+│   ├── advantage/
+│   │   └── compute.py             # Episode 级 GAE 计算
+│   ├── verl_extensions/
+│   │   ├── precomputed_adv.py     # 自定义 Verl advantage estimator
+│   │   └── tool_chat_patch.py     # Tool-calling prompt 兼容补丁
+│   ├── configs/
+│   │   └── ppo_avalon.yaml        # 训练配置模板（一个 YAML = 一个完整实验）
+│   └── scripts/
+│       ├── self_play.sh           # 自博弈循环（9 步流程，接受 YAML 配置）
+│       └── run_ppo.py             # VeRL PPO 训练 wrapper（加载 YAML 配置）
+├── nlrl/                          # NLRL 预训练模块（RL 前的自然语言策略迭代）
+│   ├── annotate.py                # Teacher LLM 标注决策质量
+│   ├── strategy.py                # 角色策略文档管理 + LLM 更新
+│   ├── synthesize.py              # 用更新策略重新生成决策 → SFT parquet
+│   ├── sft_train.py               # trl SFTTrainer 微调
+│   ├── pipeline.sh                # 完整 NLRL 流水线
+│   └── configs/
+│       └── nlrl_avalon.yaml       # NLRL 实验配置
 ├── eval/
 │   └── evaluate.py                # 训练后模型评估
+├── stats/
+│   └── game_stats.py              # 每轮游戏统计（胜率、角色胜率、wandb 上报）
 ├── run_batch.py                   # 批量对局 CLI 工具
 ├── requirements.txt               # 训练依赖
 └── README.md
@@ -55,14 +64,14 @@ python3 -c "import transformers; transformers.pipeline('text-generation', model=
 复制模板并修改参数：
 
 ```bash
-cp training/configs/ppo_avalon.yaml training/configs/my_exp.yaml
+cp training/rl/configs/ppo_avalon.yaml training/rl/configs/my_exp.yaml
 # 编辑 my_exp.yaml，修改 base_model 路径等参数
 ```
 
 ### 4. 开始训练
 
 ```bash
-bash training/scripts/self_play.sh training/configs/my_exp.yaml
+bash training/rl/scripts/self_play.sh training/rl/configs/my_exp.yaml
 ```
 
 所有产出物（数据、checkpoint、日志）自动保存在 `experiments/<experiment_name>/`。
@@ -73,7 +82,7 @@ bash training/scripts/self_play.sh training/configs/my_exp.yaml
 
 ```bash
 RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
-    bash training/scripts/self_play.sh training/configs/my_exp.yaml
+    bash training/rl/scripts/self_play.sh training/rl/configs/my_exp.yaml
 ```
 
 ### 6. 评估训练效果
@@ -213,17 +222,17 @@ Step 8: 合并 actor checkpoint       ← 下一轮模型
 
 ## 各模块详解
 
-### Critic 模型 (`training/critic/model.py`)
+### Critic 模型 (`training/rl/critic/model.py`)
 
 - 基于同一个 base model + 线性 value head
 - 使用 `AutoModelForSequenceClassification(num_labels=1)` 实现
 - 输入: tokenized prompt (游戏状态描述) → 输出: scalar V(s)
 - Value head 初始化为接近 0 的小值，确保冷启动时 V(s) ≈ 0
 
-### Critic 训练 (`training/critic/train.py`)
+### Critic 训练 (`training/rl/critic/train.py`)
 
 ```bash
-python -m training.critic.train \
+python -m training.rl.critic.train \
     --model_path /path/to/base_model \
     --data_file data/processed/train.parquet \
     --output_dir training/self_play/critic \
@@ -234,10 +243,10 @@ python -m training.critic.train \
 - G_t 是 discounted return：从终端 reward 向前折扣
   - `G_T = R_final`，`G_t = γ · G_{t+1}`（中间 reward = 0）
 
-### Critic 推理 (`training/critic/infer.py`)
+### Critic 推理 (`training/rl/critic/infer.py`)
 
 ```bash
-python -m training.critic.infer \
+python -m training.rl.critic.infer \
     --model_path training/self_play/critic \
     --input_jsonl data/trajectories.jsonl \
     --output_json data/values.json \
@@ -246,10 +255,10 @@ python -m training.critic.infer \
 
 对 JSONL 轨迹文件中的每个决策点 batch 推理 V(s)。
 
-### GAE 计算 (`training/advantage/compute.py`)
+### GAE 计算 (`training/rl/advantage/compute.py`)
 
 ```bash
-python -m training.advantage.compute \
+python -m training.rl.advantage.compute \
     --input_jsonl data/trajectories.jsonl \
     --values_json data/values.json \
     --output_json data/advantages.json \
@@ -296,7 +305,7 @@ python -m training.stats.game_stats \
   ...
 ```
 
-### 奖励函数 (`training/reward/avalon_reward.py`)
+### 奖励函数 (`training/rl/reward/avalon_reward.py`)
 
 支持两种模式：
 1. **预计算 advantage**：如果 `ground_truth` 中有 `precomputed_advantage`，直接返回（叠加长度惩罚）
@@ -312,10 +321,10 @@ penalty = MAX_PENALTY × ((tokens − START) / (CAP − START)) ^ POWER
 
 默认 POWER=2（二次方），对中等长度宽容，对接近截断严厉。通过 YAML 的 `length_penalty` 段配置。
 
-### 数据预处理 (`training/data/preprocess.py`)
+### 数据预处理 (`training/rl/data/preprocess.py`)
 
 ```bash
-python -m training.data.preprocess \
+python -m training.rl.data.preprocess \
     --input_jsonl data/trajectories.jsonl \
     --output_dir data/processed \
     --advantages_file data/advantages.json \
@@ -328,7 +337,7 @@ python -m training.data.preprocess \
 - `--model_path` 启用 tokenizer，计算 `response_token_count` 以支持长度惩罚
 - 输出 `discounted_return` 列用于 Critic 训练
 
-### Verl 扩展 (`training/verl_extensions/precomputed_adv.py`)
+### Verl 扩展 (`training/rl/verl_extensions/precomputed_adv.py`)
 
 自定义 advantage estimator，注册为 `precomputed`：
 

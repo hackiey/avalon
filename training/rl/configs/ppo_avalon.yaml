@@ -3,14 +3,14 @@
 # ===========================================================================
 # 一个 YAML = 一个完整实验。新实验只需复制本文件、修改参数、运行:
 #
-#   bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
-#   bash training/scripts/self_play.sh training/configs/exp_lr1e5.yaml
+#   bash training/rl/scripts/self_play.sh training/rl/configs/ppo_avalon.yaml
+#   bash training/rl/scripts/self_play.sh training/rl/configs/exp_lr1e5.yaml
 #
 # 所有产出物保存在 experiments/<experiment_name>/ 下。
 #
 # 断点续训:
 #   RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
-#       bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
+#       bash training/rl/scripts/self_play.sh training/rl/configs/ppo_avalon.yaml
 # ===========================================================================
 
 # 实验名称（留空则自动使用 YAML 文件名，如 ppo_avalon）
@@ -87,7 +87,7 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 2
 
 custom_reward_function:
-  path: training/reward/avalon_reward.py
+  path: training/rl/reward/avalon_reward.py
   name: compute_score
 
 trainer:

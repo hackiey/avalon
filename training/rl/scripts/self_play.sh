@@ -6,12 +6,12 @@
 # 所有产出物保存在 experiments/<experiment_name>/ 下。
 #
 # 用法:
-#   bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
-#   bash training/scripts/self_play.sh training/configs/exp_lr1e5.yaml
+#   bash training/rl/scripts/self_play.sh training/rl/configs/ppo_avalon.yaml
+#   bash training/rl/scripts/self_play.sh training/rl/configs/exp_lr1e5.yaml
 #
 # 断点续训 (通过环境变量):
 #   RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
-#       bash training/scripts/self_play.sh training/configs/ppo_avalon.yaml
+#       bash training/rl/scripts/self_play.sh training/rl/configs/ppo_avalon.yaml
 # ===========================================================================
 
 set -eo pipefail
@@ -350,7 +350,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 3/8] Critic 推理 V(s)..."
 
-        python -m training.critic.infer \
+        python -m training.rl.critic.infer \
             --model_path "${CURRENT_CRITIC}" \
             --input_jsonl "${ROUND_JSONL}" \
             --output_json "${ROUND_VALUES_JSON}" \
@@ -366,7 +366,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 4/8] GAE 计算 advantage (gamma=${GAE_GAMMA}, lambda=${GAE_LAM})..."
 
-        python -m training.advantage.compute \
+        python -m training.rl.advantage.compute \
             --input_jsonl "${ROUND_JSONL}" \
             --values_json "${ROUND_VALUES_JSON}" \
             --output_json "${ROUND_ADV_JSON}" \
@@ -382,7 +382,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 5/8] 数据预处理 (注入预计算 advantage)..."
 
-        python -m training.data.preprocess \
+        python -m training.rl.data.preprocess \
             --input_jsonl "${ROUND_JSONL}" \
             --output_dir "${ROUND_PARQUET_DIR}" \
             --advantages_file "${ROUND_ADV_JSON}" \
@@ -407,7 +407,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
         export LEN_PENALTY_CAP="${LEN_PENALTY_CAP}"
         export LEN_PENALTY_MAX="${LEN_PENALTY_MAX}"
         export LEN_PENALTY_POWER="${LEN_PENALTY_POWER}"
-        PYTHONUNBUFFERED=1 python training/scripts/run_ppo.py \
+        PYTHONUNBUFFERED=1 python training/rl/scripts/run_ppo.py \
             --avalon-config "${CONFIG_FILE}" \
             data.train_files="${ROUND_PARQUET_DIR}/train.parquet" \
             data.val_files="${ROUND_PARQUET_DIR}/test.parquet" \
@@ -441,7 +441,7 @@ for CURRENT_ROUND in $(seq 1 "${ROUNDS}"); do
     else
         log "[Step 7/8] Critic 训练 (${CRITIC_EPOCHS} epochs, lr=${CRITIC_LR})..."
 
-        python -m training.critic.train \
+        python -m training.rl.critic.train \
             --model_path "${CURRENT_CRITIC}" \
             --data_file "${ROUND_PARQUET_DIR}/train.parquet" \
             --output_dir "${ROUND_CRITIC_DIR}" \

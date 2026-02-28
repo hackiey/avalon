@@ -10,7 +10,7 @@ G_t 的计算在 training/advantage/compute.py 中完成:
 每轮 self-play 训练 critic 几个 epoch，保存到指定目录。
 
 用法:
-    python -m training.critic.train \
+    python -m training.rl.critic.train \
         --model_path Qwen/Qwen2.5-7B-Instruct \
         --data_file data/critic_train.parquet \
         --output_dir training/self_play/critic \
@@ -29,7 +29,7 @@ from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 
-from training.critic.model import CriticModel, load_tokenizer
+from training.rl.critic.model import CriticModel, load_tokenizer
 
 
 class CriticDataset(Dataset):
