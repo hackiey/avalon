@@ -14,6 +14,7 @@ An engine for training and observing LLMs playing the Avalon board game. Support
 - **Batch Execution**: Run games in bulk via CLI with parallel support
 - **Training Data Export**: Export game trajectories as JSONL for model training
 - **RL Training**: On-policy self-play with Episode-level GAE + external Critic (Verl + PPO)
+- **Multi-turn Incremental Context (v2)**: Tool-calling based multi-turn conversation mode with incremental observations, designed for agentic RL training
 
 ## Quick Start
 
@@ -76,10 +77,10 @@ pnpm install
 
 ### 5. Start Services
 
-Start the backend server (port 8000):
+Start the backend server (port 8001):
 
 ```bash
-uvicorn server.main:asgi_app --host 0.0.0.0 --port 8000
+uvicorn server.main:asgi_app --host 0.0.0.0 --port 8001
 ```
 
 Start the frontend dev server (port 5173):
@@ -150,6 +151,52 @@ Each round of self-play runs the full pipeline automatically:
 
 All outputs are saved under `experiments/<experiment_name>/`.
 
+## Context Modes
+
+The engine supports two prompt/context modes for LLM players:
+
+### v1: Full-State Prompt (default)
+
+Each decision point reconstructs the complete game state from scratch as a single `[prompt, response]` pair. The model sees the full history every time.
+
+### v2: Multi-turn Incremental Context
+
+Enabled via the "多轮增量上下文 (v2)" toggle in the web UI, or `use_incremental_context=True` in batch config.
+
+The conversation accumulates across the entire game using the standard tool-calling protocol:
+
+```
+[system]    — Game rules + role info (fixed)
+[user]      — Initial observation + first phase instruction
+[assistant] — {tool_calls: [{speak, ...}]}
+[tool]      — Environment feedback (events only: votes, quest results, discussions...)
+[user]      — Next phase instruction
+[assistant] — {tool_calls: [{vote_team, ...}]}
+[tool]      — Environment feedback
+[user]      — Next phase instruction
+...
+```
+
+Key design decisions:
+- **[tool] = environment feedback**: Only contains events that happened (vote results, quest outcomes, other players' speeches). No action instructions.
+- **[user] = action directive**: Only contains the phase instruction telling the model what to do next.
+- **Incremental observations**: Each tool response only includes NEW events since the last action, avoiding redundancy.
+- **Tool calling retained**: All game tools (`speak`, `propose_team`, `vote_team`, `vote_quest`, `assassinate`) are preserved. Only `update_memory` is removed — the conversation history itself serves as memory.
+- **Events in chronological order**: vote results → quest results → round transitions → discussions → team proposals.
+
+Enable v2 mode:
+
+```python
+# Batch config
+config = BatchConfig(use_incremental_context=True, ...)
+
+# Batch API
+POST /api/batch/run
+{"use_incremental_context": true, ...}
+```
+
+Related files: `game/prompts_v2.py` (incremental observation builder), `server/llm/player_v2.py` (multi-turn player).
+
 ## Project Structure
 
 ```
@@ -159,6 +206,8 @@ avalon/
 │   ├── rules.py                    # Rule configuration (5-10 players)
 │   ├── state.py                    # Game state management
 │   ├── engine.py                   # Core game logic
+│   ├── prompts.py                  # Full-state prompt builder (v1)
+│   ├── prompts_v2.py               # Incremental observation builder (v2)
 │   └── manager.py                  # Game manager (orchestrates engine + LLM + DB)
 ├── server/                         # Python backend
 │   ├── main.py                     # FastAPI + Socket.IO entry point
@@ -166,7 +215,8 @@ avalon/
 │   ├── llm/                        # LLM integration
 │   │   ├── base.py                 # Abstract base classes
 │   │   ├── providers.py            # Multi-provider support
-│   │   ├── player.py               # LLM player
+│   │   ├── player.py               # LLM player (v1, full-state)
+│   │   ├── player_v2.py            # LLM player (v2, multi-turn incremental)
 │   │   └── tools.py                # LLM tools / function calling
 │   ├── api/                        # REST API
 │   │   ├── batch.py                # Batch operations API

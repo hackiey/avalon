@@ -23,7 +23,34 @@ class OpenAIProvider(LLMProvider):
             api_key=api_key,
             base_url=base_url,
         )
-    
+
+    @staticmethod
+    def _serialize_messages(messages: List[Message]) -> List[Dict[str, Any]]:
+        """Serialize Messages to OpenAI API dict format.
+
+        Handles regular messages, assistant tool-call messages, and tool
+        response messages transparently.  For plain Message(role, content)
+        objects this produces the same output as the previous inline list
+        comprehension, so existing call-sites are unaffected.
+        """
+        result = []
+        for m in messages:
+            if m.role == "tool":
+                result.append({
+                    "role": "tool",
+                    "content": m.content or "",
+                    "tool_call_id": m.tool_call_id or "",
+                })
+            elif m.role == "assistant" and m.tool_calls:
+                msg: Dict[str, Any] = {"role": "assistant"}
+                if m.content:
+                    msg["content"] = m.content
+                msg["tool_calls"] = m.tool_calls
+                result.append(msg)
+            else:
+                result.append({"role": m.role, "content": m.content or ""})
+        return result
+
     async def generate(
         self,
         messages: List[Message],
@@ -33,7 +60,7 @@ class OpenAIProvider(LLMProvider):
     ) -> Union[str, Dict[str, Any]]:
         kwargs = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": self._serialize_messages(messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
             # "extra_body": {"enable_thinking": True}
@@ -131,8 +158,10 @@ class AnthropicProvider(LLMProvider):
         for m in messages:
             if m.role == "system":
                 system_message = m.content
+            elif m.role == "tool":
+                continue  # Anthropic does not support tool response messages
             else:
-                chat_messages.append({"role": m.role, "content": m.content})
+                chat_messages.append({"role": m.role, "content": m.content or ""})
         
         kwargs = {
             "model": self.model,

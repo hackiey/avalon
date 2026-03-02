@@ -7,9 +7,26 @@ from dataclasses import dataclass
 
 @dataclass
 class Message:
-    """A chat message."""
-    role: str  # "system", "user", "assistant"
-    content: str
+    """A chat message (supports tool calling multi-turn conversations).
+
+    For regular messages:
+        Message(role="user", content="hello")
+
+    For assistant messages with tool calls:
+        Message(role="assistant", content="", tool_calls=[{
+            "id": "call_1", "type": "function",
+            "function": {"name": "speak", "arguments": '{"content": "hi"}'}
+        }])
+
+    For tool response messages:
+        Message(role="tool", content="OK", tool_call_id="call_1", name="speak")
+    """
+
+    role: str  # "system", "user", "assistant", "tool"
+    content: str = ""
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 
 class ToolCallParseError(Exception):

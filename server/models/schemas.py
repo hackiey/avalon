@@ -48,6 +48,7 @@ class GameCreate(BaseModel):
     """Request to create a new game."""
     player_count: int = Field(ge=5, le=10)
     players: List[PlayerConfig]
+    use_incremental_context: bool = False
 
 
 class PlayerResponse(BaseModel):

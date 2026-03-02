@@ -20,6 +20,7 @@ export function Home() {
   // Game creation form
   const [playerCount, setPlayerCount] = useState(5);
   const [players, setPlayers] = useState<PlayerConfig[]>([]);
+  const [useIncrementalContext, setUseIncrementalContext] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -89,6 +90,7 @@ export function Home() {
       const game = await createGame({
         player_count: playerCount,
         players,
+        use_incremental_context: useIncrementalContext,
       });
 
       navigate(`/game/${game.id}`);
@@ -241,6 +243,26 @@ export function Home() {
                   )}
                 </div>
               ))}
+            </div>
+
+            {/* Context mode toggle */}
+            <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+              <div className="flex items-center gap-2">
+                <Info className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <span className="text-sm font-medium">多轮增量上下文 (v2)</span>
+                  <p className="text-xs text-muted-foreground">
+                    使用 tool calling + 增量观测的多轮对话模式
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant={useIncrementalContext ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setUseIncrementalContext(!useIncrementalContext)}
+              >
+                {useIncrementalContext ? '已开启' : '关闭'}
+              </Button>
             </div>
 
             {/* Create button */}

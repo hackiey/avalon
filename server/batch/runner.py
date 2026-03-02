@@ -44,6 +44,9 @@ class BatchConfig:
     # Skip MongoDB, store everything in memory (for servers without MongoDB)
     no_mongo: bool = False
 
+    # Use incremental (multi-turn) context instead of full-state prompts
+    use_incremental_context: bool = False
+
     # Role-based model assignment: {role_value: (model_name, provider)}
     # When set, overrides model assignment after role allocation.
     # Roles not in the map use the first entry in `models` as default.
@@ -193,7 +196,6 @@ class BatchGameRunner:
         Returns:
             (game_id, winner) - winner is "good", "evil", or None
         """
-        from server.llm.player import LLMPlayerManager
         from server.models.schemas import GameCreate, PlayerConfig
 
         # 1. Create player configs (with model assignments)
@@ -226,7 +228,12 @@ class BatchGameRunner:
                     player.provider = default_provider
 
         # 3. Create LLM player manager
-        llm_manager = LLMPlayerManager()
+        if self.config.use_incremental_context:
+            from server.llm.player_v2 import LLMPlayerManagerV2
+            llm_manager = LLMPlayerManagerV2()
+        else:
+            from server.llm.player import LLMPlayerManager
+            llm_manager = LLMPlayerManager()
         for player in rollout.state.players:
             if not player.is_human:
                 llm_manager.add_player(player)

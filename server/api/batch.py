@@ -22,6 +22,7 @@ class BatchRunRequest(BaseModel):
     rotate_models: bool = True
     parallel: int = 1  # Number of games to run in parallel
     tag: Optional[str] = None
+    use_incremental_context: bool = False
 
 
 class BatchStatusResponse(BaseModel):
@@ -75,6 +76,7 @@ async def start_batch_run(
         rotate_models=request.rotate_models,
         parallel=request.parallel,
         batch_tag=request.tag,
+        use_incremental_context=request.use_incremental_context,
         progress_callback=lambda done, total, gid: _update_progress(batch_id, done, total, gid),
     )
     

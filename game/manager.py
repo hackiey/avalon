@@ -9,6 +9,7 @@ from game.engine import GameEngine
 from game.state import GameState, GamePhase, GameStatus, Player
 from game.roles import Role, is_evil
 from server.llm.player import LLMPlayerManager, LLMPlayer
+from server.llm.player_v2 import LLMPlayerManagerV2
 from server.storage.repository import GameRepository
 from server.models.schemas import GameCreate
 
@@ -21,8 +22,9 @@ class GameManager:
     def __init__(self, headless: bool = False):
         self.games: Dict[str, GameEngine] = {}
         self.llm_managers: Dict[str, LLMPlayerManager] = {}
+        self._incremental_games: set = set()
         self.repo = GameRepository()
-        self.headless = headless  # Skip delays for batch running
+        self.headless = headless
     
     @classmethod
     def get_instance(cls) -> "GameManager":
@@ -52,8 +54,12 @@ class GameManager:
         
         self.games[engine.state.id] = engine
         
-        # Create LLM player manager
-        llm_manager = LLMPlayerManager()
+        # Create LLM player manager (v2 for incremental multi-turn context)
+        if config.use_incremental_context:
+            llm_manager = LLMPlayerManagerV2()
+            self._incremental_games.add(engine.state.id)
+        else:
+            llm_manager = LLMPlayerManager()
         for player in engine.state.players:
             if not player.is_human:
                 llm_manager.add_player(player)

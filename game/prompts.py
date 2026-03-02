@@ -359,8 +359,8 @@ def _get_team_selection_final_instructions(
 - 坚持你之前提议的队伍
 - 根据讨论情况调整队伍人选
 
-请调用 `propose_team` 工具选择最终队员。
 请调用 `speak` 工具做总结发言，说明你的最终决定和理由。
+请调用 `propose_team` 工具选择最终队员。
 请调用 `update_memory` 工具记录你的决策理由。"""
     else:
         prompt += f"""
@@ -394,8 +394,9 @@ def _get_team_selection_instructions(
     
     if use_tools:
         prompt += """
-请调用 `propose_team` 工具选择队员。
+
 请调用 `speak` 工具向大家解释你选择这个队伍的理由。
+请调用 `propose_team` 工具选择队员。
 请调用 `update_memory` 工具记录你对局势的分析、各玩家身份推断和策略计划。"""
     else:
         prompt += f"""

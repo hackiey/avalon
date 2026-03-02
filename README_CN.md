@@ -12,6 +12,7 @@
 - **批量对局**: 通过 CLI 工具批量运行游戏，支持并行执行
 - **训练数据导出**: 将游戏轨迹导出为 JSONL 格式，用于模型训练
 - **RL 训练**: 基于自博弈 + Episode-level GAE + 外部 Critic 进行在线策略强化学习（Verl + PPO）
+- **多轮增量上下文 (v2)**: 基于 tool calling 的多轮对话模式，增量观测，专为 Agentic RL 训练设计
 
 ## 快速开始
 
@@ -78,10 +79,10 @@ pnpm install
 
 ### 5. 启动服务
 
-启动后端服务 (端口 8000):
+启动后端服务 (端口 8001):
 
 ```bash
-uvicorn server.main:asgi_app --host 0.0.0.0 --port 8000
+uvicorn server.main:asgi_app --host 0.0.0.0 --port 8001
 ```
 
 启动前端开发服务器 (端口 5173):
@@ -152,6 +153,52 @@ RESUME_FROM_ROUND=3 RESUME_FROM_STEP=5 \
 
 所有产出物保存在 `experiments/<experiment_name>/` 下。
 
+## 上下文模式
+
+引擎支持两种 LLM 玩家的 prompt / 上下文模式：
+
+### v1：完整状态 Prompt（默认）
+
+每个决策点从零重建完整游戏状态，以单轮 `[prompt, response]` 形式交互。模型每次都看到完整历史。
+
+### v2：多轮增量上下文
+
+通过 Web UI 的「多轮增量上下文 (v2)」开关启用，或在批量配置中设置 `use_incremental_context=True`。
+
+对话在整局游戏中累积，遵循标准 tool-calling 协议：
+
+```
+[system]    — 游戏规则 + 角色信息（固定）
+[user]      — 初始观测 + 第一个阶段指令
+[assistant] — {tool_calls: [{speak, ...}]}
+[tool]      — 环境反馈（仅事件：投票结果、任务结果、其他玩家发言...）
+[user]      — 下一阶段指令
+[assistant] — {tool_calls: [{vote_team, ...}]}
+[tool]      — 环境反馈
+[user]      — 下一阶段指令
+...
+```
+
+核心设计：
+- **[tool] = 环境反馈**：仅包含已发生的事件（投票结果、任务结果、其他玩家发言），不含行动指令。
+- **[user] = 行动指令**：仅包含阶段指令，告诉模型该做什么。
+- **增量观测**：每次 tool response 仅包含上一次行动之后的新事件，避免冗余。
+- **保留 Tool Calling**：所有游戏工具（`speak`、`propose_team`、`vote_team`、`vote_quest`、`assassinate`）均保留。仅移除 `update_memory` — 对话历史本身即为记忆。
+- **事件按时间线排序**：投票结果 → 任务结果 → 轮次切换 → 讨论发言 → 队伍提名。
+
+启用 v2 模式：
+
+```python
+# 批量配置
+config = BatchConfig(use_incremental_context=True, ...)
+
+# Batch API
+POST /api/batch/run
+{"use_incremental_context": true, ...}
+```
+
+相关文件：`game/prompts_v2.py`（增量观测构建器）、`server/llm/player_v2.py`（多轮玩家）。
+
 ## 项目结构
 
 ```
@@ -161,6 +208,8 @@ avalon/
 │   ├── rules.py                    # 规则配置 (5-10 人局)
 │   ├── state.py                    # 游戏状态管理
 │   ├── engine.py                   # 游戏核心逻辑
+│   ├── prompts.py                  # 完整状态 Prompt 构建器 (v1)
+│   ├── prompts_v2.py               # 增量观测构建器 (v2)
 │   └── manager.py                  # 游戏管理器 (协调引擎 + LLM + DB)
 ├── server/                         # Python 后端
 │   ├── main.py                     # FastAPI + Socket.IO 入口
@@ -168,7 +217,8 @@ avalon/
 │   ├── llm/                        # LLM 集成
 │   │   ├── base.py                 # 抽象基类
 │   │   ├── providers.py            # 多厂商实现
-│   │   ├── player.py               # LLM 玩家
+│   │   ├── player.py               # LLM 玩家 (v1, 完整状态)
+│   │   ├── player_v2.py            # LLM 玩家 (v2, 多轮增量)
 │   │   └── tools.py                # LLM 工具/函数调用
 │   ├── api/                        # REST API
 │   │   ├── batch.py                # 批量操作 API

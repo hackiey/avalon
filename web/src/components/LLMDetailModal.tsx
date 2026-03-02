@@ -3,6 +3,25 @@ import { Modal } from '@/components/ui/Modal';
 import { cn } from '@/lib/utils';
 import { Loader2, MessageSquare, Brain, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
 
+interface InputToolCall {
+  id?: string;
+  type?: string;
+  function?: {
+    name: string;
+    arguments: string;
+  };
+  name?: string;
+  arguments?: Record<string, unknown>;
+}
+
+interface InputMessage {
+  role: string;
+  content?: string;
+  tool_calls?: InputToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+
 interface LLMDetails {
   id: number;
   action_type: string;
@@ -11,7 +30,7 @@ interface LLMDetails {
   round_num: number;
   timestamp: string;
   llm_input: {
-    messages?: Array<{ role: string; content: string }>;
+    messages?: InputMessage[];
   } | null;
   llm_output: {
     content?: string;
@@ -138,6 +157,51 @@ export function LLMDetailModal({
     }));
   };
 
+  const getToolCallDisplay = (tc: InputToolCall) => {
+    const name = tc.function?.name ?? tc.name ?? 'unknown';
+    let args: string;
+    try {
+      if (tc.function?.arguments) {
+        const parsed = typeof tc.function.arguments === 'string'
+          ? JSON.parse(tc.function.arguments)
+          : tc.function.arguments;
+        args = JSON.stringify(parsed, null, 2);
+      } else if (tc.arguments) {
+        args = JSON.stringify(tc.arguments, null, 2);
+      } else {
+        args = '{}';
+      }
+    } catch {
+      args = tc.function?.arguments ?? '{}';
+    }
+    return { name, args };
+  };
+
+  const getRoleStyle = (role: string) => {
+    switch (role) {
+      case 'system':
+        return 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800';
+      case 'user':
+        return 'bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800';
+      case 'assistant':
+        return 'bg-gray-50 dark:bg-gray-950/30 border border-gray-200 dark:border-gray-700';
+      case 'tool':
+        return 'bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800';
+      default:
+        return 'bg-muted';
+    }
+  };
+
+  const getRoleLabel = (msg: InputMessage) => {
+    switch (msg.role) {
+      case 'system': return '系统提示';
+      case 'user': return '用户提示';
+      case 'assistant': return '助手';
+      case 'tool': return `工具响应${msg.name ? ` (${msg.name})` : ''}`;
+      default: return msg.role;
+    }
+  };
+
   const renderMessages = () => {
     if (!details?.llm_input?.messages) return null;
 
@@ -161,21 +225,46 @@ export function LLMDetailModal({
             {details.llm_input.messages.map((msg, index) => (
               <div
                 key={index}
-                className={cn(
-                  'rounded-lg p-3 text-sm',
-                  msg.role === 'system'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800'
-                    : msg.role === 'user'
-                    ? 'bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800'
-                    : 'bg-muted'
-                )}
+                className={cn('rounded-lg p-3 text-sm', getRoleStyle(msg.role))}
               >
                 <div className="font-medium text-xs uppercase mb-1 opacity-70">
-                  {msg.role === 'system' ? '系统提示' : msg.role === 'user' ? '用户提示' : msg.role}
+                  {getRoleLabel(msg)}
                 </div>
-                <pre className="whitespace-pre-wrap font-mono text-xs overflow-x-auto">
-                  {msg.content}
-                </pre>
+
+                {msg.content && (
+                  <pre className="whitespace-pre-wrap font-mono text-xs overflow-x-auto">
+                    {msg.content}
+                  </pre>
+                )}
+
+                {msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {msg.tool_calls.map((tc, tcIdx) => {
+                      const { name, args } = getToolCallDisplay(tc);
+                      return (
+                        <div
+                          key={tcIdx}
+                          className="rounded p-2 bg-amber-100/60 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Wrench className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+                            <span className="font-medium text-xs text-amber-700 dark:text-amber-300">
+                              {name}
+                            </span>
+                            {tc.id && (
+                              <span className="text-[10px] text-amber-500 dark:text-amber-500 ml-auto font-mono">
+                                {tc.id}
+                              </span>
+                            )}
+                          </div>
+                          <pre className="whitespace-pre-wrap font-mono text-xs overflow-x-auto bg-background/40 rounded p-1.5">
+                            {args}
+                          </pre>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ))}
           </div>
